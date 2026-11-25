@@ -383,8 +383,12 @@ export function pruneScanCache(cache: ScanCache, retentionCutoffMs: number): num
   let changed = 0;
   for (const [path, entry] of cache) {
     const records = entry.records.filter((record) => record.timestampMs >= retentionCutoffMs);
-    const tailRecords = entry.tailRecords.filter((record) => record.timestampMs >= retentionCutoffMs);
-    const malformedRecords = entry.malformedRecords.filter((timestamp) => timestamp >= retentionCutoffMs);
+    const tailRecords = entry.tailRecords.filter(
+      (record) => record.timestampMs >= retentionCutoffMs,
+    );
+    const malformedRecords = entry.malformedRecords.filter(
+      (timestamp) => timestamp >= retentionCutoffMs,
+    );
     if (records.length + tailRecords.length + malformedRecords.length === 0) {
       cache.delete(path);
       changed += 1;

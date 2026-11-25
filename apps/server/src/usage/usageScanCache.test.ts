@@ -62,8 +62,16 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
 
 describe("scan cache round trip", () => {
   it("prunes records by timestamp and reclaims expired interned identifiers on the next write", () => {
-    const old = record({ timestampMs: 1_000, model: "expired-model", sessionId: "expired-session" });
-    const recent = record({ timestampMs: 3_000, model: "recent-model", sessionId: "recent-session" });
+    const old = record({
+      timestampMs: 1_000,
+      model: "expired-model",
+      sessionId: "expired-session",
+    });
+    const recent = record({
+      timestampMs: 3_000,
+      model: "recent-model",
+      sessionId: "recent-session",
+    });
     const cache = cacheWith([
       ["/touched.jsonl", 4_000, [old, recent]],
       ["/old-mtime.jsonl", 100, [recent]],
@@ -82,7 +90,9 @@ describe("scan cache round trip", () => {
     expect(cache.has("/expired.jsonl")).toBe(false);
     expect(cache.get("/old-mtime.jsonl")?.records).toEqual([recent]);
     expect(cache.get("/touched.jsonl")).toMatchObject({
-      records: [recent], tailRecords: [recent], malformedRecords: [3_000],
+      records: [recent],
+      tailRecords: [recent],
+      malformedRecords: [3_000],
       position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
     });
     const document = parse(write(cache, {}));

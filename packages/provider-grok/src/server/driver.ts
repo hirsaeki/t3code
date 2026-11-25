@@ -215,17 +215,22 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
             snapshot.installed &&
             snapshot.auth.status === "authenticated"
           ),
-        (snapshot) => host.settings.get.pipe(
-          Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
-          Effect.orElseSucceed(() => false),
-          Effect.flatMap((allowed) => !allowed ? Effect.succeed(snapshot) : readGrokAccount(processEnv).pipe(
-            Effect.map(({ email, usageLimits }) => ({
-              ...snapshot,
-              auth: email ? { ...snapshot.auth, email } : snapshot.auth,
-              usageLimits,
-            })),
-          )),
-        ),
+        (snapshot) =>
+          host.settings.get.pipe(
+            Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
+            Effect.orElseSucceed(() => false),
+            Effect.flatMap((allowed) =>
+              !allowed
+                ? Effect.succeed(snapshot)
+                : readGrokAccount(processEnv).pipe(
+                    Effect.map(({ email, usageLimits }) => ({
+                      ...snapshot,
+                      auth: email ? { ...snapshot.auth, email } : snapshot.auth,
+                      usageLimits,
+                    })),
+                  ),
+            ),
+          ),
       ),
       Effect.map(stampIdentity),
       Effect.provideService(HttpClient.HttpClient, httpClient),

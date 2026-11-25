@@ -44,10 +44,20 @@ function withUsageLimits(
   return usageLimits ? { ...rest, usageLimits } : rest;
 }
 
-const resolveAccountUsageAfterProbe = (input: Parameters<typeof resolveUsageLimitsAfterProbe>[0]) => {
+const resolveAccountUsageAfterProbe = (
+  input: Parameters<typeof resolveUsageLimitsAfterProbe>[0],
+) => {
   const resolved = resolveUsageLimitsAfterProbe(input);
-  return resolved !== undefined && resolved === input.published && input.probed?.unavailable?.reason === "probeFailed"
-    ? { ...resolved, unavailable: { reason: "probeFailed" as const, message: "The latest check failed. Showing the previous account reading." } }
+  return resolved !== undefined &&
+    resolved === input.published &&
+    input.probed?.unavailable?.reason === "probeFailed"
+    ? {
+        ...resolved,
+        unavailable: {
+          reason: "probeFailed" as const,
+          message: "The latest check failed. Showing the previous account reading.",
+        },
+      }
     : resolved;
 };
 
@@ -87,10 +97,11 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   Scope.Scope | ProviderHost.ProviderHost
 > {
   const host = yield* ProviderHost.ProviderHost;
-  const accountUsageEnabled = (instanceId: ServerProvider["instanceId"]) => host.settings.get.pipe(
-    Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
-    Effect.orElseSucceed(() => false),
-  );
+  const accountUsageEnabled = (instanceId: ServerProvider["instanceId"]) =>
+    host.settings.get.pipe(
+      Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
+      Effect.orElseSucceed(() => false),
+    );
   const refreshSemaphore = yield* Semaphore.make(1);
   const usageRefreshQueued = yield* Ref.make<symbol | null>(null);
   let accountGeneration = 0;
@@ -102,8 +113,11 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const initialAccountSettings = yield* host.settings.get;
   const initialSettings = yield* input.getSettings;
   const initial = yield* input.initialSnapshot(initialSettings);
-  const initialSnapshot = withUsageLimits(initial,
-    isProviderAccountUsageEnabled(initialAccountSettings, initial.instanceId) ? initial.usageLimits : undefined,
+  const initialSnapshot = withUsageLimits(
+    initial,
+    isProviderAccountUsageEnabled(initialAccountSettings, initial.instanceId)
+      ? initial.usageLimits
+      : undefined,
   );
   const snapshotStateRef = yield* Ref.make<ProviderSnapshotState>({
     snapshot: initialSnapshot,
@@ -206,7 +220,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     // A probe without usage must not erase a report published while its I/O was in flight.
     const usageBeforeProbe = (yield* Ref.get(snapshotStateRef)).snapshot.usageLimits;
     const probeAccountGeneration = accountGeneration;
-    const requestedAccountSettings = JSON.stringify((yield* host.settings.get).providerInstances[initialSnapshot.instanceId]);
+    const requestedAccountSettings = JSON.stringify(
+      (yield* host.settings.get).providerInstances[initialSnapshot.instanceId],
+    );
     const probedSnapshot = yield* input.checkProvider.pipe(
       Effect.provideService(DeferringFailedCheck, options?.deferFailure === true),
     );
@@ -222,64 +238,76 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         return snapshot;
       }
     }
-    const { snapshot: nextSnapshot, generation: nextGeneration } = yield* host.settings.withSnapshot((current) => Effect.gen(function* () {
-      const allowAccountUsage = isProviderAccountUsageEnabled(current, probedSnapshot.instanceId) &&
-        probeAccountGeneration === accountGeneration &&
-        requestedAccountSettings === JSON.stringify(current.providerInstances[probedSnapshot.instanceId]);
-      const result = yield* Ref.modify(
-      snapshotStateRef,
-      (state) => {
-        const generation = input.enrichSnapshot
-          ? state.enrichmentGeneration + 1
-          : state.enrichmentGeneration;
-        // Failed reads retain limits only for the same account and original workspace.
-        const previous = state.snapshot.auth;
-        const sameKnownAccount =
-          (previous.email !== undefined || previous.workspaceId !== undefined || previous.profileId !== undefined) &&
-          previous.email?.toLowerCase() === probedSnapshot.auth.email?.toLowerCase() &&
-          previous.workspaceId === probedSnapshot.auth.workspaceId &&
-          previous.profileId === probedSnapshot.auth.profileId;
-        const switchedAccount = !sameKnownAccount || probedSnapshot.auth.status !== "authenticated" || !probedSnapshot.enabled;
-        const usageLimits = !allowAccountUsage || !probedSnapshot.enabled || probedSnapshot.auth.status !== "authenticated"
-          ? undefined
-          : switchedAccount
-          ? probedSnapshot.usageLimits
-          : probedSnapshot.usageLimits === undefined &&
-              state.snapshot.usageLimits !== usageBeforeProbe
-            ? state.snapshot.usageLimits
-            : resolveAccountUsageAfterProbe({
-                published: state.snapshot.usageLimits,
-                probed: probedSnapshot.usageLimits,
-              });
-        const workspaceId =
-          usageLimits === probedSnapshot.usageLimits ? undefined : state.snapshot.auth.workspaceId;
-        const usageAuthLabel =
-          !switchedAccount && usageLimits?.checkedAt === state.snapshot.usageLimits?.checkedAt
-            ? state.usageAuthLabel
-            : undefined;
-        const labeledProbe =
-          usageAuthLabel === undefined
-            ? probedSnapshot
-            : {
-                ...probedSnapshot,
-                auth: { ...probedSnapshot.auth, label: usageAuthLabel ?? undefined },
-              };
-        const snapshot = withUsageLimits(
-          workspaceId && !probedSnapshot.auth.workspaceId
-            ? { ...labeledProbe, auth: { ...labeledProbe.auth, workspaceId } }
-            : labeledProbe,
-          usageLimits,
-        );
-        return [
-          { snapshot, generation },
-          { snapshot, enrichmentGeneration: generation, usageAuthLabel, checked: true },
-        ] as const;
-      },
-    );
-    yield* Ref.set(settingsRef, nextSettings);
-    yield* PubSub.publish(changesPubSub, result.snapshot);
-    return result;
-    }));
+    const { snapshot: nextSnapshot, generation: nextGeneration } =
+      yield* host.settings.withSnapshot((current) =>
+        Effect.gen(function* () {
+          const allowAccountUsage =
+            isProviderAccountUsageEnabled(current, probedSnapshot.instanceId) &&
+            probeAccountGeneration === accountGeneration &&
+            requestedAccountSettings ===
+              JSON.stringify(current.providerInstances[probedSnapshot.instanceId]);
+          const result = yield* Ref.modify(snapshotStateRef, (state) => {
+            const generation = input.enrichSnapshot
+              ? state.enrichmentGeneration + 1
+              : state.enrichmentGeneration;
+            // Failed reads retain limits only for the same account and original workspace.
+            const previous = state.snapshot.auth;
+            const sameKnownAccount =
+              (previous.email !== undefined ||
+                previous.workspaceId !== undefined ||
+                previous.profileId !== undefined) &&
+              previous.email?.toLowerCase() === probedSnapshot.auth.email?.toLowerCase() &&
+              previous.workspaceId === probedSnapshot.auth.workspaceId &&
+              previous.profileId === probedSnapshot.auth.profileId;
+            const switchedAccount =
+              !sameKnownAccount ||
+              probedSnapshot.auth.status !== "authenticated" ||
+              !probedSnapshot.enabled;
+            const usageLimits =
+              !allowAccountUsage ||
+              !probedSnapshot.enabled ||
+              probedSnapshot.auth.status !== "authenticated"
+                ? undefined
+                : switchedAccount
+                  ? probedSnapshot.usageLimits
+                  : probedSnapshot.usageLimits === undefined &&
+                      state.snapshot.usageLimits !== usageBeforeProbe
+                    ? state.snapshot.usageLimits
+                    : resolveAccountUsageAfterProbe({
+                        published: state.snapshot.usageLimits,
+                        probed: probedSnapshot.usageLimits,
+                      });
+            const workspaceId =
+              usageLimits === probedSnapshot.usageLimits
+                ? undefined
+                : state.snapshot.auth.workspaceId;
+            const usageAuthLabel =
+              !switchedAccount && usageLimits?.checkedAt === state.snapshot.usageLimits?.checkedAt
+                ? state.usageAuthLabel
+                : undefined;
+            const labeledProbe =
+              usageAuthLabel === undefined
+                ? probedSnapshot
+                : {
+                    ...probedSnapshot,
+                    auth: { ...probedSnapshot.auth, label: usageAuthLabel ?? undefined },
+                  };
+            const snapshot = withUsageLimits(
+              workspaceId && !probedSnapshot.auth.workspaceId
+                ? { ...labeledProbe, auth: { ...labeledProbe.auth, workspaceId } }
+                : labeledProbe,
+              usageLimits,
+            );
+            return [
+              { snapshot, generation },
+              { snapshot, enrichmentGeneration: generation, usageAuthLabel, checked: true },
+            ] as const;
+          });
+          yield* Ref.set(settingsRef, nextSettings);
+          yield* PubSub.publish(changesPubSub, result.snapshot);
+          return result;
+        }),
+      );
     yield* restartSnapshotEnrichment(nextSettings, nextSnapshot, nextGeneration);
     return nextSnapshot;
   });
@@ -289,42 +317,46 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   // Providers call this on every token-usage tick, usually without changing the snapshot.
   const applyUsageLimits: ManagedServerProvider["applyUsageLimits"] = Effect.fnUntraced(
     function* (update) {
-      yield* host.settings.withSnapshot((current) => Effect.gen(function* () {
-      if (!isProviderAccountUsageEnabled(current, initialSnapshot.instanceId)) return;
-      const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
-        const complete = update.complete && update.windows.length > 0;
-        const usageLimits = complete
-          ? makeUsageLimits(update)
-          : applyUsageLimitsUpdate({
-              previous: state.snapshot.usageLimits,
-              update,
-              checkedAt: update.checkedAt,
+      yield* host.settings
+        .withSnapshot((current) =>
+          Effect.gen(function* () {
+            if (!isProviderAccountUsageEnabled(current, initialSnapshot.instanceId)) return;
+            const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
+              const complete = update.complete && update.windows.length > 0;
+              const usageLimits = complete
+                ? makeUsageLimits(update)
+                : applyUsageLimitsUpdate({
+                    previous: state.snapshot.usageLimits,
+                    update,
+                    checkedAt: update.checkedAt,
+                  });
+              const { auth } = state.snapshot;
+              const label = update.windows.length > 0 ? update.authLabel : undefined;
+              const relabel =
+                (label !== undefined || (complete && state.usageAuthLabel !== undefined)) &&
+                label !== auth.label;
+              if (usageLimits === state.snapshot.usageLimits && !relabel) {
+                return [null, state] as const;
+              }
+              const snapshot = withUsageLimits(
+                relabel ? { ...state.snapshot, auth: { ...auth, label } } : state.snapshot,
+                usageLimits,
+              );
+              return [
+                snapshot,
+                {
+                  ...state,
+                  snapshot,
+                  usageAuthLabel: label ?? (complete ? null : state.usageAuthLabel),
+                },
+              ] as const;
             });
-        const { auth } = state.snapshot;
-        const label = update.windows.length > 0 ? update.authLabel : undefined;
-        const relabel =
-          (label !== undefined || (complete && state.usageAuthLabel !== undefined)) &&
-          label !== auth.label;
-        if (usageLimits === state.snapshot.usageLimits && !relabel) {
-          return [null, state] as const;
-        }
-        const snapshot = withUsageLimits(
-          relabel ? { ...state.snapshot, auth: { ...auth, label } } : state.snapshot,
-          usageLimits,
-        );
-        return [
-          snapshot,
-          {
-            ...state,
-            snapshot,
-            usageAuthLabel: label ?? (complete ? null : state.usageAuthLabel),
-          },
-        ] as const;
-      });
-      if (snapshotToPublish !== null) {
-        yield* PubSub.publish(changesPubSub, snapshotToPublish);
-      }
-      })).pipe(Effect.ignore);
+            if (snapshotToPublish !== null) {
+              yield* PubSub.publish(changesPubSub, snapshotToPublish);
+            }
+          }),
+        )
+        .pipe(Effect.ignore);
     },
   );
 
@@ -382,28 +414,41 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   ) {
     const { snapshot } = yield* Ref.get(snapshotStateRef);
     if (!snapshot.enabled) return;
-    if (!(yield* accountUsageEnabled(snapshot.instanceId)) || !needsUsageRecovery(snapshot) || !input.checkUsageLimits) {
+    if (
+      !(yield* accountUsageEnabled(snapshot.instanceId)) ||
+      !needsUsageRecovery(snapshot) ||
+      !input.checkUsageLimits
+    ) {
       if (needsProviderRefresh(snapshot)) {
         yield* applySnapshotBase(yield* input.getSettings, { forceRefresh: true, deferFailure });
       }
       return;
     }
     const probeAccountGeneration = accountGeneration;
-    const requestedAccountSettings = JSON.stringify((yield* host.settings.get).providerInstances[snapshot.instanceId]);
+    const requestedAccountSettings = JSON.stringify(
+      (yield* host.settings.get).providerInstances[snapshot.instanceId],
+    );
     const probed = yield* input.checkUsageLimits;
-    yield* host.settings.withSnapshot((current) => Effect.gen(function* () {
-      if (probeAccountGeneration !== accountGeneration || !isProviderAccountUsageEnabled(current, snapshot.instanceId) ||
-        requestedAccountSettings !== JSON.stringify(current.providerInstances[snapshot.instanceId])) return;
-    const next = yield* Ref.modify(snapshotStateRef, (state) => {
-      const usageLimits = resolveAccountUsageAfterProbe({
-        published: state.snapshot.usageLimits,
-        probed,
-      });
-      const snapshot = withUsageLimits(state.snapshot, usageLimits);
-      return [snapshot, { ...state, snapshot }] as const;
-    });
-    yield* PubSub.publish(changesPubSub, next);
-    }));
+    yield* host.settings.withSnapshot((current) =>
+      Effect.gen(function* () {
+        if (
+          probeAccountGeneration !== accountGeneration ||
+          !isProviderAccountUsageEnabled(current, snapshot.instanceId) ||
+          requestedAccountSettings !==
+            JSON.stringify(current.providerInstances[snapshot.instanceId])
+        )
+          return;
+        const next = yield* Ref.modify(snapshotStateRef, (state) => {
+          const usageLimits = resolveAccountUsageAfterProbe({
+            published: state.snapshot.usageLimits,
+            probed,
+          });
+          const snapshot = withUsageLimits(state.snapshot, usageLimits);
+          return [snapshot, { ...state, snapshot }] as const;
+        });
+        yield* PubSub.publish(changesPubSub, next);
+      }),
+    );
   });
 
   const shouldRefreshOnInterval = Effect.gen(function* () {
@@ -435,20 +480,24 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           Effect.orElseSucceed(() => DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL),
         );
 
-  let accountSettingsKey = JSON.stringify(initialAccountSettings.providerInstances[initialSnapshot.instanceId]);
+  let accountSettingsKey = JSON.stringify(
+    initialAccountSettings.providerInstances[initialSnapshot.instanceId],
+  );
   yield* accountSettingsChanges.pipe(
-    Stream.runForEach((settings) => Effect.gen(function* () {
-      const key = JSON.stringify(settings.providerInstances[initialSnapshot.instanceId]);
-      if (key === accountSettingsKey) return;
-      accountSettingsKey = key;
-      accountGeneration += 1;
-      yield* (input.invalidateUsageCache ?? Effect.void);
-      const snapshot = yield* Ref.modify(snapshotStateRef, (state) => {
-        const snapshot = withUsageLimits(state.snapshot, undefined);
-        return [snapshot, { ...state, snapshot, usageAuthLabel: undefined }] as const;
-      });
-      yield* PubSub.publish(changesPubSub, snapshot);
-    })),
+    Stream.runForEach((settings) =>
+      Effect.gen(function* () {
+        const key = JSON.stringify(settings.providerInstances[initialSnapshot.instanceId]);
+        if (key === accountSettingsKey) return;
+        accountSettingsKey = key;
+        accountGeneration += 1;
+        yield* input.invalidateUsageCache ?? Effect.void;
+        const snapshot = yield* Ref.modify(snapshotStateRef, (state) => {
+          const snapshot = withUsageLimits(state.snapshot, undefined);
+          return [snapshot, { ...state, snapshot, usageAuthLabel: undefined }] as const;
+        });
+        yield* PubSub.publish(changesPubSub, snapshot);
+      }),
+    ),
     Effect.forkScoped,
   );
 

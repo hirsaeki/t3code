@@ -24,9 +24,9 @@ export const claudeAccountConfigPath = Effect.fn("claudeAccountConfigPath")(func
 export const readClaudeOauthAccount = Effect.fn("readClaudeOauthAccount")(
   function* (accountConfigPath: string) {
     const fileSystem = yield* FileSystem.FileSystem;
-    const config = yield* fileSystem.readFileString(accountConfigPath).pipe(
-      Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(ClaudeAccountConfig))),
-    );
+    const config = yield* fileSystem
+      .readFileString(accountConfigPath)
+      .pipe(Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(ClaudeAccountConfig))));
     return config.oauthAccount;
   },
   Effect.orElseSucceed(() => undefined),

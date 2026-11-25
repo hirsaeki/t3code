@@ -19,7 +19,8 @@ it.effect("does not write secret bytes when private permissions cannot be verifi
     const privateFiles = yield* makePrivateFiles().pipe(
       Effect.provideService(FileSystem.FileSystem, {
         ...fs,
-        stat: (resource) => fs.stat(resource).pipe(Effect.map((info) => ({ ...info, mode: 0o666 }))),
+        stat: (resource) =>
+          fs.stat(resource).pipe(Effect.map((info) => ({ ...info, mode: 0o666 }))),
       }),
       Effect.provideService(HostProcess.Platform, "linux"),
     );

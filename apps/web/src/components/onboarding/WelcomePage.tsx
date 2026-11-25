@@ -833,12 +833,19 @@ function ProjectsSection({
       <WelcomeSection title={gt("Projects")}>
         <div className="space-y-2 py-2">
           <p className="text-sm text-muted-foreground">
-            <T>Read this computer's agent history to choose projects and conversations to import.</T>
+            <T>
+              Read this computer's agent history to choose projects and conversations to import.
+            </T>
           </p>
           {!canDiscover ? (
             <p className="text-sm text-destructive">{m(IMPORT_PERMISSION_MESSAGE)}</p>
           ) : null}
-          <Button variant="outline" size="sm" disabled={!canDiscover || isImporting} onClick={onDiscover}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!canDiscover || isImporting}
+            onClick={onDiscover}
+          >
             <T>Find projects in agent history</T>
           </Button>
         </div>

@@ -1,5 +1,9 @@
 import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
-import { CodexSettings, ProviderDriverKind, isProviderAccountUsageEnabled } from "@t3tools/contracts";
+import {
+  CodexSettings,
+  ProviderDriverKind,
+  isProviderAccountUsageEnabled,
+} from "@t3tools/contracts";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import type * as Signature from "effect/crypto/Signature";
@@ -274,10 +278,16 @@ export const CodexDriver: ProviderDriver<
     const checkProvider = modelCatalog.refreshInBackground.pipe(
       Effect.andThen(
         Effect.zipWith(
-          checkCodexProviderStatus(effectiveConfig, undefined, processEnv, undefined, host.settings.get.pipe(
-            Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
-            Effect.orElseSucceed(() => false),
-          )),
+          checkCodexProviderStatus(
+            effectiveConfig,
+            undefined,
+            processEnv,
+            undefined,
+            host.settings.get.pipe(
+              Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
+              Effect.orElseSucceed(() => false),
+            ),
+          ),
           currentCatalog,
           (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
           { concurrent: true },

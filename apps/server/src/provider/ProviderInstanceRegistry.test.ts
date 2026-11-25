@@ -752,53 +752,55 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
-  it.live.skipIf(windowsHost)("does not expose Claude reset credits or call private OAuth APIs", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const fixtures = yield* makeTildeProviderFixtures();
-      yield* fs.writeFileString(
-        path.join(fixtures.claudeHomePath, ".credentials.json"),
-        '{"claudeAiOauth":{"accessToken":"synthetic-test-token"}}',
-      );
-      yield* fs.writeFileString(
-        path.join(fixtures.claudeHomePath, ".claude.json"),
-        '{"oauthAccount":{"organizationUuid":"synthetic-test-org"}}',
-      );
-      const requests: Array<string> = [];
-      const client = HttpClient.make((request) => {
-        requests.push(request.url);
-        return Effect.succeed(
-          HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" })),
+  it.live.skipIf(windowsHost)(
+    "does not expose Claude reset credits or call private OAuth APIs",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixtures = yield* makeTildeProviderFixtures();
+        yield* fs.writeFileString(
+          path.join(fixtures.claudeHomePath, ".credentials.json"),
+          '{"claudeAiOauth":{"accessToken":"synthetic-test-token"}}',
         );
-      });
-      const instanceId = ProviderInstanceId.make("claude_reset");
-      const configMap: ProviderInstanceConfigMap = {
-        [instanceId]: {
-          driver: ProviderDriverKind.make("claudeAgent"),
-          enabled: true,
-          accountUsageEnabled: true,
-          config: makeClaudeConfig({
+        yield* fs.writeFileString(
+          path.join(fixtures.claudeHomePath, ".claude.json"),
+          '{"oauthAccount":{"organizationUuid":"synthetic-test-org"}}',
+        );
+        const requests: Array<string> = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" })),
+          );
+        });
+        const instanceId = ProviderInstanceId.make("claude_reset");
+        const configMap: ProviderInstanceConfigMap = {
+          [instanceId]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
             enabled: true,
-            binaryPath: fixtures.claudeBinaryPath,
-            homePath: fixtures.claudeHomePath,
-          }),
-        },
-      };
-      const settings = yield* ServerSettings.ServerSettingsService;
-      yield* settings.updateSettings({ providerInstances: configMap });
-      const { registry } = yield* makeProviderInstanceRegistry({
-        drivers: [ClaudeDriver],
-        configMap,
-      }).pipe(Effect.provideService(HttpClient.HttpClient, client));
-      const instance = yield* registry.getInstance(instanceId);
-      expect(instance).toBeDefined();
-      const snapshot = yield* instance!.snapshot.refresh;
-      expect(snapshot.usageLimits?.windows[0]?.usedPercent).toBe(100);
-      expect(snapshot.usageLimits?.resetCredits).toBeUndefined();
-      expect(instance!.consumeResetCredit).toBeUndefined();
-      expect(requests.some((url) => new URL(url).hostname === "api.anthropic.com")).toBe(false);
-    }).pipe(Effect.provide(layerTest)),
+            accountUsageEnabled: true,
+            config: makeClaudeConfig({
+              enabled: true,
+              binaryPath: fixtures.claudeBinaryPath,
+              homePath: fixtures.claudeHomePath,
+            }),
+          },
+        };
+        const settings = yield* ServerSettings.ServerSettingsService;
+        yield* settings.updateSettings({ providerInstances: configMap });
+        const { registry } = yield* makeProviderInstanceRegistry({
+          drivers: [ClaudeDriver],
+          configMap,
+        }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+        const instance = yield* registry.getInstance(instanceId);
+        expect(instance).toBeDefined();
+        const snapshot = yield* instance!.snapshot.refresh;
+        expect(snapshot.usageLimits?.windows[0]?.usedPercent).toBe(100);
+        expect(snapshot.usageLimits?.resetCredits).toBeUndefined();
+        expect(instance!.consumeResetCredit).toBeUndefined();
+        expect(requests.some((url) => new URL(url).hostname === "api.anthropic.com")).toBe(false);
+      }).pipe(Effect.provide(layerTest)),
   );
 
   const makeClaudeCacheFixture = Effect.fnUntraced(function* (

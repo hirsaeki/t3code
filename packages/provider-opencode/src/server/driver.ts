@@ -495,16 +495,22 @@ export const OpenCodeDriver: ProviderDriver<
       Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
       Effect.orElseSucceed(() => false),
     );
-    const legacyUsageLimits = accountUsageEnabled.pipe(Effect.flatMap((allowed) => !allowed ? Effect.undefined : readOpenCodeGoUsageLimits({
-      enabled: effectiveConfig.enabled,
-      serverUrl: effectiveConfig.serverUrl,
-      environment: processEnv,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, pathService),
-      Effect.provideService(HttpClient.HttpClient, httpClient),
-      Effect.provideService(Digest.Digest, digest),
-    )));
+    const legacyUsageLimits = accountUsageEnabled.pipe(
+      Effect.flatMap((allowed) =>
+        !allowed
+          ? Effect.undefined
+          : readOpenCodeGoUsageLimits({
+              enabled: effectiveConfig.enabled,
+              serverUrl: effectiveConfig.serverUrl,
+              environment: processEnv,
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, pathService),
+              Effect.provideService(HttpClient.HttpClient, httpClient),
+              Effect.provideService(Digest.Digest, digest),
+            ),
+      ),
+    );
     let unsupportedUsageVersion: string | undefined;
     const checkUsageLimits = Effect.gen(function* () {
       if (!effectiveConfig.enabled || !(yield* accountUsageEnabled)) return undefined;
@@ -512,13 +518,19 @@ export const OpenCodeDriver: ProviderDriver<
       if (runtime.generation === "v1" || runtime.version === unsupportedUsageVersion)
         return yield* legacyUsageLimits;
       const limits = yield* openCode2Server.withConnection((connection) =>
-        accountUsageEnabled.pipe(Effect.flatMap((allowed) => allowed ? connection.usageLimits(host.paths.cwd) : Effect.undefined)),
+        accountUsageEnabled.pipe(
+          Effect.flatMap((allowed) =>
+            allowed ? connection.usageLimits(host.paths.cwd) : Effect.undefined,
+          ),
+        ),
       );
       if (limits === undefined) unsupportedUsageVersion = runtime.version;
       if (limits !== undefined && limits.unavailable?.reason !== "unsupported") return limits;
       // Without a Console workspace the server reports nothing, but a local Go key still has usage.
       const legacy = yield* legacyUsageLimits;
-      return limits !== undefined && legacy?.unavailable?.reason === "unsupported" ? limits : legacy;
+      return limits !== undefined && legacy?.unavailable?.reason === "unsupported"
+        ? limits
+        : legacy;
     }).pipe(
       Effect.timeout("10 seconds"),
       Effect.catch(() =>

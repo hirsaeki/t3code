@@ -393,7 +393,9 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),
-      redeem: creditSource ? creditSource.redeem : (winner.redeem ?? previous.redeem ?? next.redeem),
+      redeem: creditSource
+        ? creditSource.redeem
+        : (winner.redeem ?? previous.redeem ?? next.redeem),
       limits: {
         ...winner.limits,
         ...(creditSource?.limits.resetCredits
@@ -416,12 +418,14 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         accentColor: provider.accentColor,
         environments: [{ environmentId, label }],
         sourceLabel: null,
-        redeem: provider.driver === "codex"
-          ? { environmentId, input: { instanceId: provider.instanceId } }
-          : null,
-        limits: provider.driver === "codex"
-          ? provider.usageLimits
-          : { ...provider.usageLimits, resetCredits: undefined },
+        redeem:
+          provider.driver === "codex"
+            ? { environmentId, input: { instanceId: provider.instanceId } }
+            : null,
+        limits:
+          provider.driver === "codex"
+            ? provider.usageLimits
+            : { ...provider.usageLimits, resetCredits: undefined },
       });
     }
   }
@@ -1016,7 +1020,8 @@ export function collectProviderUsageLimits(
         Date.parse(snapshot.limits.checkedAt) > Date.parse(previous.usage.limits.checkedAt));
     const previousCredit = previous?.credits;
     const credits =
-      provider.driver === "codex" && snapshot.limits.resetCredits &&
+      provider.driver === "codex" &&
+      snapshot.limits.resetCredits &&
       (!previousCredit ||
         Date.parse(snapshot.limits.checkedAt) > Date.parse(previousCredit.limits.checkedAt))
         ? snapshot

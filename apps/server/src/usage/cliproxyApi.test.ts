@@ -9,8 +9,12 @@ const config = {
   managementKey: "management-secret",
 };
 const accounts = [
-  { id: "codex.json", provider: "codex", email: "first@example.com",
-    id_token: { chatgpt_account_id: "account-a" } },
+  {
+    id: "codex.json",
+    provider: "codex",
+    email: "first@example.com",
+    id_token: { chatgpt_account_id: "account-a" },
+  },
   { id: "claude.json", provider: "claude" },
   { id: "grok.json", provider: "xai" },
   { id: "antigravity.json", provider: "antigravity" },
@@ -20,25 +24,32 @@ const accounts = [
 
 function fixture(options: { models?: (name: string) => Response } = {}) {
   const requests: Array<{ path: string; name: string | null }> = [];
-  const http = HttpClient.make((request) => Effect.sync(() => {
-    expect(request.headers.authorization).toBe("Bearer management-secret");
-    expect(request.headers["user-agent"]).toBe("t3-code");
-    expect(request.headers.originator).toBeUndefined();
-    expect(request.headers["anthropic-beta"]).toBeUndefined();
-    expect(request.headers["x-xai-token-auth"]).toBeUndefined();
-    expect(request.method).toBe("GET");
-    const url = new URL(request.url);
-    const path = url.pathname;
-    const name = url.searchParams.get("name");
-    requests.push({ path, name });
-    if (path.endsWith("/auth-files/models")) {
-      return HttpClientResponse.fromWeb(request,
-        options.models?.(name!) ?? Response.json({}, { status: 404 }));
-    }
-    expect(path).toMatch(/\/auth-files$/);
-    return HttpClientResponse.fromWeb(request, Response.json({ files: accounts }));
-  }));
-  return { requests, api: makeCliproxyApi.pipe(Effect.provideService(HttpClient.HttpClient, http)) };
+  const http = HttpClient.make((request) =>
+    Effect.sync(() => {
+      expect(request.headers.authorization).toBe("Bearer management-secret");
+      expect(request.headers["user-agent"]).toBe("t3-code");
+      expect(request.headers.originator).toBeUndefined();
+      expect(request.headers["anthropic-beta"]).toBeUndefined();
+      expect(request.headers["x-xai-token-auth"]).toBeUndefined();
+      expect(request.method).toBe("GET");
+      const url = new URL(request.url);
+      const path = url.pathname;
+      const name = url.searchParams.get("name");
+      requests.push({ path, name });
+      if (path.endsWith("/auth-files/models")) {
+        return HttpClientResponse.fromWeb(
+          request,
+          options.models?.(name!) ?? Response.json({}, { status: 404 }),
+        );
+      }
+      expect(path).toMatch(/\/auth-files$/);
+      return HttpClientResponse.fromWeb(request, Response.json({ files: accounts }));
+    }),
+  );
+  return {
+    requests,
+    api: makeCliproxyApi.pipe(Effect.provideService(HttpClient.HttpClient, http)),
+  };
 }
 
 const unreachableHub = (
@@ -103,9 +114,7 @@ describe("CLIProxyAPI hub failures", () => {
           ),
         ),
       );
-      const api = yield* makeCliproxyApi.pipe(
-        Effect.provideService(HttpClient.HttpClient, test),
-          );
+      const api = yield* makeCliproxyApi.pipe(Effect.provideService(HttpClient.HttpClient, test));
       const error = yield* Effect.flip(api.readAccounts(config));
       expect(error.detail).toContain("401");
       expect(error.detail).not.toContain("management-secret");
@@ -114,29 +123,36 @@ describe("CLIProxyAPI hub failures", () => {
 });
 
 describe("CLIProxyAPI inventory", () => {
-  it.effect("lists active supported accounts without forwarding upstream quota or reset calls", () =>
-    Effect.gen(function* () {
-      const test = fixture();
-      const result = yield* (yield* test.api).readAccounts(config);
-      expect(result.map(({ driver }) => driver)).toEqual(["codex", "claudeAgent", "grok", "antigravity"]);
-      expect(result[0]).toMatchObject({ email: "first@example.com", workspaceId: "account-a" });
-      for (const account of result) {
-        expect(account.usageLimits.windows).toEqual([]);
-        expect(account.usageLimits.unavailable?.reason).toBe("unsupported");
-        expect(account.usageLimits.resetCredits).toBeUndefined();
-      }
-      expect(test.requests).toHaveLength(5);
-      expect(test.requests.flatMap(({ name }) => name ? [name] : [])).toEqual(
-        accounts.slice(0, 4).map(({ id }) => id),
-      );
-    }),
+  it.effect(
+    "lists active supported accounts without forwarding upstream quota or reset calls",
+    () =>
+      Effect.gen(function* () {
+        const test = fixture();
+        const result = yield* (yield* test.api).readAccounts(config);
+        expect(result.map(({ driver }) => driver)).toEqual([
+          "codex",
+          "claudeAgent",
+          "grok",
+          "antigravity",
+        ]);
+        expect(result[0]).toMatchObject({ email: "first@example.com", workspaceId: "account-a" });
+        for (const account of result) {
+          expect(account.usageLimits.windows).toEqual([]);
+          expect(account.usageLimits.unavailable?.reason).toBe("unsupported");
+          expect(account.usageLimits.resetCredits).toBeUndefined();
+        }
+        expect(test.requests).toHaveLength(5);
+        expect(test.requests.flatMap(({ name }) => (name ? [name] : []))).toEqual(
+          accounts.slice(0, 4).map(({ id }) => id),
+        );
+      }),
   );
 
   it.effect("retains documented model inventory when available", () =>
     Effect.gen(function* () {
-      const test = fixture({ models: (name) => Response.json({ models: [
-        { id: ` ${name}-model ` }, { id: " " },
-      ] }) });
+      const test = fixture({
+        models: (name) => Response.json({ models: [{ id: ` ${name}-model ` }, { id: " " }] }),
+      });
       const result = yield* (yield* test.api).readAccounts(config);
       expect(result.map(({ id, models }) => ({ id, models }))).toEqual(
         accounts.slice(0, 4).map(({ id }) => ({ id, models: [`${id}-model`] })),
@@ -179,5 +195,4 @@ describe("CLIProxyAPI inventory", () => {
       ).toBe(true);
     }),
   );
-
 });

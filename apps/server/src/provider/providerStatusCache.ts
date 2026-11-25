@@ -136,7 +136,11 @@ export const writeProviderStatusCache = (input: {
   readonly filePath: string;
   readonly provider: ServerProvider;
 }) => {
-  const { updateState: _updateState, usageLimits: _usageLimits, ...cacheableProvider } = input.provider;
+  const {
+    updateState: _updateState,
+    usageLimits: _usageLimits,
+    ...cacheableProvider
+  } = input.provider;
   return writeFileStringAtomically({
     filePath: input.filePath,
     contents: `${JSON.stringify(cacheableProvider, null, 2)}\n`,
@@ -154,9 +158,11 @@ export const clearCachedProviderUsage = Effect.fn("providerStatusCache.clearCach
       const filePath = path.join(cacheDir, name);
       yield* fs.readFileString(filePath).pipe(
         Effect.flatMap(decodeProviderStatusCache),
-        Effect.flatMap((provider) => provider.usageLimits === undefined
-          ? Effect.void
-          : writeProviderStatusCache({ filePath, provider })),
+        Effect.flatMap((provider) =>
+          provider.usageLimits === undefined
+            ? Effect.void
+            : writeProviderStatusCache({ filePath, provider }),
+        ),
         Effect.ignore,
       );
     }

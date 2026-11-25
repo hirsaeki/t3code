@@ -266,29 +266,64 @@ it.effect("keeps hub quota unavailable without making upstream account requests"
     const sources = yield* UsageLimitSources.make;
     yield* sources.refresh;
     const [source] = yield* sources.current;
-    expect(source?.accounts[0]?.usageLimits).toMatchObject({ windows: [], unavailable: { reason: "unsupported" } });
+    expect(source?.accounts[0]?.usageLimits).toMatchObject({
+      windows: [],
+      unavailable: { reason: "unsupported" },
+    });
     expect(paths.length).toBeGreaterThan(0);
-    expect(paths.every((path) => path.endsWith("/auth-files") || path.endsWith("/auth-files/models"))).toBe(true);
-  }).pipe(Effect.provide([
-    ServerSettings.layerTest({ usageLimitSources: { [UsageLimitSourceId.make("hub")]: {
-      kind: "cliproxy", url: "http://hub.test:8317", managementKey: "management-secret",
-      enabled: true, accountUsageEnabled: true,
-    } } }),
-    Layer.mock(BackgroundPolicy.BackgroundPolicy)({ shouldRunScopeWork: () => Effect.succeed(false) }),
-    Layer.succeed(SecretResolver.SecretResolver, {
-      label: (provider) => Effect.succeed(provider),
-      read: (references) => Effect.succeed(references.map(() => undefined)),
-      invalidate: () => Effect.void,
-    }),
-    Layer.succeed(HttpClient.HttpClient, HttpClient.make((request) => Effect.sync(() => {
-      const path = new URL(request.url).pathname;
-      paths.push(path);
-      return HttpClientResponse.fromWeb(request, Response.json(path.endsWith("/auth-files")
-        ? { files: [{ id: "first.json", auth_index: "a", provider: "codex", email: "first@example.test" }] }
-        : { models: [] }));
-    }))),
-    NodeCrypto.layer,
-  ]));
+    expect(
+      paths.every((path) => path.endsWith("/auth-files") || path.endsWith("/auth-files/models")),
+    ).toBe(true);
+  }).pipe(
+    Effect.provide([
+      ServerSettings.layerTest({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("hub")]: {
+            kind: "cliproxy",
+            url: "http://hub.test:8317",
+            managementKey: "management-secret",
+            enabled: true,
+            accountUsageEnabled: true,
+          },
+        },
+      }),
+      Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+        shouldRunScopeWork: () => Effect.succeed(false),
+      }),
+      Layer.succeed(SecretResolver.SecretResolver, {
+        label: (provider) => Effect.succeed(provider),
+        read: (references) => Effect.succeed(references.map(() => undefined)),
+        invalidate: () => Effect.void,
+      }),
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          Effect.sync(() => {
+            const path = new URL(request.url).pathname;
+            paths.push(path);
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json(
+                path.endsWith("/auth-files")
+                  ? {
+                      files: [
+                        {
+                          id: "first.json",
+                          auth_index: "a",
+                          provider: "codex",
+                          email: "first@example.test",
+                        },
+                      ],
+                    }
+                  : { models: [] },
+              ),
+            );
+          }),
+        ),
+      ),
+      NodeCrypto.layer,
+    ]),
+  );
 });
 
 it.effect.each([
@@ -300,21 +335,33 @@ it.effect.each([
     const sources = yield* UsageLimitSources.make;
     yield* sources.refresh;
     expect(yield* sources.current).toEqual([]);
-  }).pipe(Effect.provide([
-    ServerSettings.layerTest({ usageLimitSources: { [UsageLimitSourceId.make("quota")]: {
-      kind: "http", url: "https://quota.test/v1",
-      managementKey: { provider: SecretProviderId.make("store"), reference: "quota-key" },
-      ...flags,
-    } } }),
-    Layer.mock(BackgroundPolicy.BackgroundPolicy)({ shouldRunScopeWork: () => Effect.succeed(false) }),
-    Layer.succeed(SecretResolver.SecretResolver, {
-      label: (provider) => Effect.succeed(provider),
-      read: () => Effect.die("An unselected quota credential must not be resolved"),
-      invalidate: () => Effect.void,
-    }),
-    Layer.succeed(HttpClient.HttpClient, HttpClient.make(() => Effect.die("An unselected quota source must not be requested"))),
-    NodeCrypto.layer,
-  ])),
+  }).pipe(
+    Effect.provide([
+      ServerSettings.layerTest({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("quota")]: {
+            kind: "http",
+            url: "https://quota.test/v1",
+            managementKey: { provider: SecretProviderId.make("store"), reference: "quota-key" },
+            ...flags,
+          },
+        },
+      }),
+      Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+        shouldRunScopeWork: () => Effect.succeed(false),
+      }),
+      Layer.succeed(SecretResolver.SecretResolver, {
+        label: (provider) => Effect.succeed(provider),
+        read: () => Effect.die("An unselected quota credential must not be resolved"),
+        invalidate: () => Effect.void,
+      }),
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die("An unselected quota source must not be requested")),
+      ),
+      NodeCrypto.layer,
+    ]),
+  ),
 );
 
 it.effect("discards an in-flight account response after its source is revoked", () =>
@@ -328,38 +375,68 @@ it.effect("discards an in-flight account response after its source is revoked", 
       const refresh = yield* sources.refresh.pipe(Effect.forkChild);
       yield* Deferred.await(started);
       const current = yield* settings.getSettings;
-      yield* settings.updateSettings({ usageLimitSources: {
-        [UsageLimitSourceId.make("quota")]: {
-          ...current.usageLimitSources[UsageLimitSourceId.make("quota")]!,
-          accountUsageEnabled: false,
+      yield* settings.updateSettings({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("quota")]: {
+            ...current.usageLimitSources[UsageLimitSourceId.make("quota")]!,
+            accountUsageEnabled: false,
+          },
         },
-      } });
+      });
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(refresh);
       expect(yield* sources.current).toEqual([]);
       yield* sources.refresh;
       expect(requests).toBe(1);
-    }).pipe(Effect.provide([
-      ServerSettings.layerTest({ usageLimitSources: { [UsageLimitSourceId.make("quota")]: {
-        kind: "http", url: "https://quota.test/v1", managementKey: "test-token",
-        enabled: true, accountUsageEnabled: true,
-      } } }),
-      Layer.mock(BackgroundPolicy.BackgroundPolicy)({ shouldRunScopeWork: () => Effect.succeed(false) }),
-      Layer.succeed(SecretResolver.SecretResolver, {
-        label: (provider) => Effect.succeed(provider),
-        read: (references) => Effect.succeed(references.map(() => undefined)),
-        invalidate: () => Effect.void,
-      }),
-      Layer.succeed(HttpClient.HttpClient, HttpClient.make((request) => Effect.gen(function* () {
-        requests++;
-        yield* Deferred.succeed(started, undefined);
-        yield* Deferred.await(release);
-        return HttpClientResponse.fromWeb(request, Response.json({ version: 1, accounts: [{
-          id: "revoked-account", label: "Account", windows: [{ id: "monthly", kind: "monthly", label: "Monthly", usedPercent: 35 }],
-        }] }));
-      }))),
-      NodeCrypto.layer,
-    ]));
+    }).pipe(
+      Effect.provide([
+        ServerSettings.layerTest({
+          usageLimitSources: {
+            [UsageLimitSourceId.make("quota")]: {
+              kind: "http",
+              url: "https://quota.test/v1",
+              managementKey: "test-token",
+              enabled: true,
+              accountUsageEnabled: true,
+            },
+          },
+        }),
+        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+          shouldRunScopeWork: () => Effect.succeed(false),
+        }),
+        Layer.succeed(SecretResolver.SecretResolver, {
+          label: (provider) => Effect.succeed(provider),
+          read: (references) => Effect.succeed(references.map(() => undefined)),
+          invalidate: () => Effect.void,
+        }),
+        Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.gen(function* () {
+              requests++;
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+              return HttpClientResponse.fromWeb(
+                request,
+                Response.json({
+                  version: 1,
+                  accounts: [
+                    {
+                      id: "revoked-account",
+                      label: "Account",
+                      windows: [
+                        { id: "monthly", kind: "monthly", label: "Monthly", usedPercent: 35 },
+                      ],
+                    },
+                  ],
+                }),
+              );
+            }),
+          ),
+        ),
+        NodeCrypto.layer,
+      ]),
+    );
   }),
 );
 

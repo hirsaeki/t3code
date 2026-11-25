@@ -1,4 +1,8 @@
-import { ProviderInstanceId, resolveProviderInstanceEnabled, type ServerSettings } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  resolveProviderInstanceEnabled,
+  type ServerSettings,
+} from "@t3tools/contracts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
@@ -90,40 +94,63 @@ const make = Effect.gen(function* () {
   let activeKeys = new Set<string>();
   let retentionDays: ServerSettings["usageHistoryRetentionDays"] | undefined;
   let currentRetentionStartMs = 0;
-  const keyOf = (apiKey: string) => digest.digest(Digest.sha256, new TextEncoder().encode(apiKey)).pipe(
-    Effect.map((bytes) => `api-key:${Hex.encode(bytes)}`),
-  );
+  const keyOf = (apiKey: string) =>
+    digest
+      .digest(Digest.sha256, new TextEncoder().encode(apiKey))
+      .pipe(Effect.map((bytes) => `api-key:${Hex.encode(bytes)}`));
   const reconcileCredentials = Effect.fn("CursorUsageAccounts.reconcileCredentials")(function* (
     snapshot?: ServerSettings,
   ) {
     yield* ensureLoaded;
     const settings = snapshot ?? (yield* host.settings.get.pipe(Effect.orElseSucceed(() => null)));
-    const entries = Object.entries(settings?.providerInstances ?? {}).filter(([, instance]) =>
-      instance.driver === "cursor" && instance.accountUsageEnabled === true && resolveProviderInstanceEnabled(instance),
+    const entries = Object.entries(settings?.providerInstances ?? {}).filter(
+      ([, instance]) =>
+        instance.driver === "cursor" &&
+        instance.accountUsageEnabled === true &&
+        resolveProviderInstanceEnabled(instance),
     );
-    const credentials = yield* Effect.forEach(entries, Effect.fnUntraced(function* ([id, instance]) {
-      const instanceId = ProviderInstanceId.make(id);
-      const environment = yield* mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
-      const apiKey = environment.CURSOR_API_KEY?.trim() || (yield* readStoredCursorApiKey(instanceId).pipe(
-        Effect.provideService(ProviderHost.ProviderHost, host),
-        Effect.orElseSucceed(() => undefined),
-      ));
-      return apiKey ? { instanceId, apiKey, key: yield* keyOf(apiKey) } : null;
-    }));
+    const credentials = yield* Effect.forEach(
+      entries,
+      Effect.fnUntraced(function* ([id, instance]) {
+        const instanceId = ProviderInstanceId.make(id);
+        const environment = yield* mergeProviderInstanceEnvironment(
+          instance.environment,
+          hostEnvironment,
+        );
+        const apiKey =
+          environment.CURSOR_API_KEY?.trim() ||
+          (yield* readStoredCursorApiKey(instanceId).pipe(
+            Effect.provideService(ProviderHost.ProviderHost, host),
+            Effect.orElseSucceed(() => undefined),
+          ));
+        return apiKey ? { instanceId, apiKey, key: yield* keyOf(apiKey) } : null;
+      }),
+    );
     const next = credentials.filter((credential) => credential !== null);
     const keys = new Set(next.map((credential) => credential.key));
     const nextRetentionDays = settings?.usageHistoryRetentionDays ?? 92;
-    if (keys.size !== activeKeys.size || [...activeKeys].some((key) => !keys.has(key)) || retentionDays !== nextRetentionDays) generation += 1;
+    if (
+      keys.size !== activeKeys.size ||
+      [...activeKeys].some((key) => !keys.has(key)) ||
+      retentionDays !== nextRetentionDays
+    )
+      generation += 1;
     activeKeys = keys;
     retentionDays = nextRetentionDays;
     instanceKeys.clear();
     for (const credential of next) instanceKeys.set(credential.instanceId, credential.key);
     const nowMs = yield* Clock.currentTimeMillis;
-    const retentionStartMs = nextRetentionDays === "unlimited" ? 0
-      : Math.max(0, nowMs - nextRetentionDays * 24 * 60 * 60 * 1000);
+    const retentionStartMs =
+      nextRetentionDays === "unlimited"
+        ? 0
+        : Math.max(0, nowMs - nextRetentionDays * 24 * 60 * 60 * 1000);
     currentRetentionStartMs = retentionStartMs;
     for (const [key, cache] of caches) {
-      if (!keys.has(key)) { caches.delete(key); cacheDirty = true; continue; }
+      if (!keys.has(key)) {
+        caches.delete(key);
+        cacheDirty = true;
+        continue;
+      }
       const records = cache.records.filter((record) => record.timestampMs >= retentionStartMs);
       if (records.length !== cache.records.length) {
         caches.set(key, { ...cache, records, sinceMs: Math.max(cache.sinceMs, retentionStartMs) });
@@ -137,28 +164,45 @@ const make = Effect.gen(function* () {
 
   // Serialize snapshots; clear dirty before encoding and restore it on failure so changes retry.
   const persistLock = yield* Semaphore.make(1);
-  const persist = host.settings.withSnapshot((settings) => Effect.gen(function* () {
-    yield* reconcileCredentials(settings);
-    if (!cacheDirty) return;
-    cacheDirty = false;
-    yield* (caches.size === 0
-      ? fileSystem.remove(cachePath).pipe(Effect.catchIf((error) => error.reason._tag === "NotFound", () => Effect.void))
-      : Effect.sync(() => encodeCursorAccountCaches(caches)).pipe(
-          Effect.flatMap((contents) => writeFileStringAtomically({ filePath: cachePath, contents })),
-        )).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
+  const persist = host.settings
+    .withSnapshot((settings) =>
+      Effect.gen(function* () {
+        yield* reconcileCredentials(settings);
+        if (!cacheDirty) return;
+        cacheDirty = false;
+        yield* (
+          caches.size === 0
+            ? fileSystem.remove(cachePath).pipe(
+                Effect.catchIf(
+                  (error) => error.reason._tag === "NotFound",
+                  () => Effect.void,
+                ),
+              )
+            : Effect.sync(() => encodeCursorAccountCaches(caches)).pipe(
+                Effect.flatMap((contents) =>
+                  writeFileStringAtomically({ filePath: cachePath, contents }),
+                ),
+              )
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.catchCause(() =>
+            Effect.sync(() => {
+              cacheDirty = true;
+            }),
+          ),
+        );
+      }),
+    )
+    .pipe(
+      persistLock.withPermit,
       Effect.catchCause(() =>
         Effect.sync(() => {
           cacheDirty = true;
         }),
       ),
+      Effect.withSpan("CursorUsageAccounts.persist"),
     );
-  })).pipe(
-    persistLock.withPermit,
-    Effect.catchCause(() => Effect.sync(() => { cacheDirty = true; })),
-    Effect.withSpan("CursorUsageAccounts.persist"),
-  );
 
   const pendingPersists = new Set<Fiber.Fiber<void>>();
   const schedulePersist = Effect.forkDetach(persist).pipe(
@@ -167,9 +211,10 @@ const make = Effect.gen(function* () {
       fiber.addObserver(() => pendingPersists.delete(fiber));
     }),
   );
-  const awaitPersisted = Effect.andThen(persist, Effect.suspend(() => Fiber.awaitAll([...pendingPersists]))).pipe(
-    Effect.asVoid,
-  );
+  const awaitPersisted = Effect.andThen(
+    persist,
+    Effect.suspend(() => Fiber.awaitAll([...pendingPersists])),
+  ).pipe(Effect.asVoid);
   yield* Effect.addFinalizer(() => awaitPersisted);
 
   const refreshLock = yield* Semaphore.make(2);
@@ -273,7 +318,8 @@ const make = Effect.gen(function* () {
           Effect.catchCause(() =>
             Clock.currentTimeMillis.pipe(
               Effect.map((atMs) => {
-                if (activeKeys.has(credentialKey)) failures.set(credentialKey, { atMs, error: CURSOR_ACCOUNT_READ_ERROR });
+                if (activeKeys.has(credentialKey))
+                  failures.set(credentialKey, { atMs, error: CURSOR_ACCOUNT_READ_ERROR });
               }),
             ),
           ),
@@ -357,7 +403,13 @@ const make = Effect.gen(function* () {
       const selected = new Set(instances.map((instance) => instance.instanceId));
       const credentials = yield* reconcileCredentials();
       yield* persist;
-      const uniqueApiKeys = [...new Set(credentials.filter((credential) => selected.has(credential.instanceId)).map((credential) => credential.apiKey))];
+      const uniqueApiKeys = [
+        ...new Set(
+          credentials
+            .filter((credential) => selected.has(credential.instanceId))
+            .map((credential) => credential.apiKey),
+        ),
+      ];
       if (uniqueApiKeys.length > 0) {
         const scanGeneration = generation;
         const sources: ReadonlyArray<ProviderUsageScan | null> = yield* Effect.forEach(
@@ -395,7 +447,9 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const invalidate = Effect.fn("CursorUsageAccounts.invalidate")(function* (instanceId: ProviderInstanceId) {
+  const invalidate = Effect.fn("CursorUsageAccounts.invalidate")(function* (
+    instanceId: ProviderInstanceId,
+  ) {
     generation += 1;
     const key = instanceKeys.get(instanceId);
     if (key !== undefined) {
@@ -409,7 +463,10 @@ const make = Effect.gen(function* () {
   const settingsChanges = yield* host.settings.subscribe;
   yield* reconcileCredentials();
   yield* persist;
-  yield* settingsChanges.pipe(Stream.runForEach(() => persist), Effect.forkScoped);
+  yield* settingsChanges.pipe(
+    Stream.runForEach(() => persist),
+    Effect.forkScoped,
+  );
 
   return CursorUsageAccounts.of({ scan, awaitPersisted, invalidate });
 });

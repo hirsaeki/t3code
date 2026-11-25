@@ -787,19 +787,22 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
         CODEX_CONFIG_PROBE_TIMEOUT_MS,
       ).pipe(
         Effect.catch(() => Effect.logDebug("Codex config read failed.").pipe(Effect.as(undefined))),
-        Effect.flatMap((config) => Effect.gen(function* () {
-          // Recheck consent after initialization, immediately before the optional account request.
-          const allowed = yield* (input.accountUsageEnabled ?? Effect.succeed(false));
-          const nativeUsage =
-            input.skipNativeUsage !== true && allowed &&
-            config !== undefined &&
-            codexRoutesSpendNativeQuota(accountResponse, config.config);
-          const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
-            ? readCodexRateLimits(client, deadlineMs)
-            : Effect.undefined;
-          const rateLimits = yield* readUsage;
-          return { config: config?.config, nativeUsage, rateLimits };
-        })),
+        Effect.flatMap((config) =>
+          Effect.gen(function* () {
+            // Recheck consent after initialization, immediately before the optional account request.
+            const allowed = yield* input.accountUsageEnabled ?? Effect.succeed(false);
+            const nativeUsage =
+              input.skipNativeUsage !== true &&
+              allowed &&
+              config !== undefined &&
+              codexRoutesSpendNativeQuota(accountResponse, config.config);
+            const readUsage: Effect.Effect<CodexRateLimitsProbe | undefined> = nativeUsage
+              ? readCodexRateLimits(client, deadlineMs)
+              : Effect.undefined;
+            const rateLimits = yield* readUsage;
+            return { config: config?.config, nativeUsage, rateLimits };
+          }),
+        ),
       ),
     ],
     { concurrency: "unbounded" },

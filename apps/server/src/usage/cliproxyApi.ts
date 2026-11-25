@@ -24,9 +24,7 @@ const AuthFile = Schema.Struct({
   provider: Schema.String,
   email: Schema.optional(Schema.String),
   disabled: Schema.optional(Schema.Boolean),
-  id_token: Schema.optional(
-    Schema.Struct({ chatgpt_account_id: Schema.optional(Schema.String) }),
-  ),
+  id_token: Schema.optional(Schema.Struct({ chatgpt_account_id: Schema.optional(Schema.String) })),
 });
 const AuthFiles = Schema.Struct({ files: Schema.Array(AuthFile) });
 const AuthFileModels = Schema.Struct({
@@ -113,40 +111,45 @@ export const makeCliproxyApi = Effect.gen(function* () {
   ): Effect.fn.Return<ReadonlyArray<UsageLimitSourceAccount>, UsageLimitSourceError> {
     const response = yield* management(hub, "auth-files");
     const accounts = yield* decodeAuthFiles(response).pipe(
-      Effect.mapError(() => new UsageLimitSourceError({ detail: "The hub could not list accounts." })),
+      Effect.mapError(
+        () => new UsageLimitSourceError({ detail: "The hub could not list accounts." }),
+      ),
     );
     const checkedAt = DateTime.formatIso(yield* DateTime.now);
     const readable = accounts.files.flatMap((account) => {
       const driver = HUB_PROVIDERS.get(account.provider);
       return driver && !account.disabled ? [{ account, driver }] : [];
     });
-    return yield* Effect.forEach(readable, ({ account, driver }) =>
-      Effect.gen(function* () {
-        const models = yield* management(
-          hub,
-          `auth-files/models?name=${encodeURIComponent(account.id)}`,
-        ).pipe(
-          Effect.flatMap(decodeAuthFileModels),
-          Effect.map(({ models }) => models.flatMap(({ id }) => id.trim() ? [id.trim()] : [])),
-          Effect.timeoutOption("2 seconds"),
-          Effect.orElseSucceed(() => Option.none()),
-        );
-        // Inventory is a documented hub API. Upstream quota/reset calls are not delegated to the hub.
-        return {
-          id: account.id,
-          driver,
-          ...(account.email ? { email: account.email } : {}),
-          ...(account.id_token?.chatgpt_account_id?.trim()
-            ? { workspaceId: account.id_token.chatgpt_account_id.trim() }
-            : {}),
-          ...(Option.isSome(models) ? { models: models.value } : {}),
-          usageLimits: makeUnavailableUsageLimits({
-            checkedAt,
-            reason: "unsupported",
-            message: "Account quotas and reset credits are unavailable through this hub integration.",
-          }),
-        };
-      }),
+    return yield* Effect.forEach(
+      readable,
+      ({ account, driver }) =>
+        Effect.gen(function* () {
+          const models = yield* management(
+            hub,
+            `auth-files/models?name=${encodeURIComponent(account.id)}`,
+          ).pipe(
+            Effect.flatMap(decodeAuthFileModels),
+            Effect.map(({ models }) => models.flatMap(({ id }) => (id.trim() ? [id.trim()] : []))),
+            Effect.timeoutOption("2 seconds"),
+            Effect.orElseSucceed(() => Option.none()),
+          );
+          // Inventory is a documented hub API. Upstream quota/reset calls are not delegated to the hub.
+          return {
+            id: account.id,
+            driver,
+            ...(account.email ? { email: account.email } : {}),
+            ...(account.id_token?.chatgpt_account_id?.trim()
+              ? { workspaceId: account.id_token.chatgpt_account_id.trim() }
+              : {}),
+            ...(Option.isSome(models) ? { models: models.value } : {}),
+            usageLimits: makeUnavailableUsageLimits({
+              checkedAt,
+              reason: "unsupported",
+              message:
+                "Account quotas and reset credits are unavailable through this hub integration.",
+            }),
+          };
+        }),
       { concurrency: "unbounded" },
     );
   });

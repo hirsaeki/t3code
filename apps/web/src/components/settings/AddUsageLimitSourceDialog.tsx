@@ -102,8 +102,8 @@ export function AddUsageLimitSourceDialog({
             ) : (
               <T>
                 Read the hub's account and model inventory from <Var>{environmentLabel}</Var>. The
-                hub manages its own provider credentials. Provider quotas are unavailable through this
-                connection.
+                hub manages its own provider credentials. Provider quotas are unavailable through
+                this connection.
               </T>
             )}
           </DialogDescription>

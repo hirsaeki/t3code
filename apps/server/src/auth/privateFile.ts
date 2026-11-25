@@ -87,14 +87,14 @@ export const makePrivateFiles = Effect.fn("makePrivateFiles")(function* () {
     if (exitCode !== 0) return yield* new PrivatePathError({ resource });
   });
 
-  const writePrivateFile = Effect.fn("writePrivateFile")(
-    function* (resource: string, value: Uint8Array) {
-      const file = yield* fileSystem.open(resource, { flag: "wx", mode: 0o600 });
-      yield* restrictPrivatePath(resource, "file");
-      yield* file.writeAll(value);
-      yield* file.sync;
-    },
-    Effect.scoped,
-  );
+  const writePrivateFile = Effect.fn("writePrivateFile")(function* (
+    resource: string,
+    value: Uint8Array,
+  ) {
+    const file = yield* fileSystem.open(resource, { flag: "wx", mode: 0o600 });
+    yield* restrictPrivatePath(resource, "file");
+    yield* file.writeAll(value);
+    yield* file.sync;
+  }, Effect.scoped);
   return { restrictPrivatePath, writePrivateFile };
 });

@@ -241,19 +241,26 @@ export const CursorDriver: ProviderDriver<
                 snapshot.installed &&
                 snapshot.auth.status === "authenticated"
               ),
-            (snapshot) => host.settings.get.pipe(
-              Effect.map((settings) => {
-                const instance = settings.providerInstances[instanceId];
-                return instance !== undefined && instance.accountUsageEnabled === true && resolveProviderInstanceEnabled(instance);
-              }),
-              Effect.orElseSucceed(() => false),
-              Effect.flatMap((allowed) => !allowed ? Effect.succeed(snapshot) :
-                readCursorUsageLimits(effectiveConfig, {
-                  ...processEnv,
-                  CURSOR_API_KEY: apiKey,
-                }).pipe(Effect.map((usageLimits) => ({ ...snapshot, usageLimits }))),
+            (snapshot) =>
+              host.settings.get.pipe(
+                Effect.map((settings) => {
+                  const instance = settings.providerInstances[instanceId];
+                  return (
+                    instance !== undefined &&
+                    instance.accountUsageEnabled === true &&
+                    resolveProviderInstanceEnabled(instance)
+                  );
+                }),
+                Effect.orElseSucceed(() => false),
+                Effect.flatMap((allowed) =>
+                  !allowed
+                    ? Effect.succeed(snapshot)
+                    : readCursorUsageLimits(effectiveConfig, {
+                        ...processEnv,
+                        CURSOR_API_KEY: apiKey,
+                      }).pipe(Effect.map((usageLimits) => ({ ...snapshot, usageLimits }))),
+                ),
               ),
-            ),
           ),
         ),
       ),

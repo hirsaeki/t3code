@@ -1047,20 +1047,34 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     Effect.gen(function* () {
       const requested: string[] = [];
       const replay = replayOpenCodeServer(OPENCODE_2_RESPONSES, "secret", requested);
-      const instance = yield* create({ serverUrl: "https://remote.example", serverPassword: "secret" }, replay, flags.enabled).pipe(
-        Effect.provide(TestProviderHost.layer({ settings: {
-          ...DEFAULT_SERVER_SETTINGS,
-          providerInstances: { [ProviderInstanceId.make("opencode-test")]: {
-            driver: ProviderDriverKind.make("opencode"), ...flags,
-          } },
-        } })),
+      const instance = yield* create(
+        { serverUrl: "https://remote.example", serverPassword: "secret" },
+        replay,
+        flags.enabled,
+      ).pipe(
+        Effect.provide(
+          TestProviderHost.layer({
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providerInstances: {
+                [ProviderInstanceId.make("opencode-test")]: {
+                  driver: ProviderDriverKind.make("opencode"),
+                  ...flags,
+                },
+              },
+            },
+          }),
+        ),
       );
       yield* instance.snapshot.streamChanges.pipe(Stream.take(1), Stream.runDrain);
       yield* instance.snapshot.refresh;
       yield* instance.snapshot.refreshUsage!;
       yield* TestClock.adjust("10 minutes");
       assert.isUndefined((yield* instance.snapshot.getSnapshot).usageLimits);
-      assert.deepStrictEqual(requested.filter((url) => url.includes("usage/limits") || url.includes("go/v1/usage")), []);
+      assert.deepStrictEqual(
+        requested.filter((url) => url.includes("usage/limits") || url.includes("go/v1/usage")),
+        [],
+      );
     }),
   );
 
@@ -1371,7 +1385,9 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         enabled: true,
         config: OpenCodeDriver.defaultConfig(),
       }).pipe(
-        Effect.provide(TestProviderHost.layer({ settings: optedInSettings("opencode-go-key-only") })),
+        Effect.provide(
+          TestProviderHost.layer({ settings: optedInSettings("opencode-go-key-only") }),
+        ),
         Effect.provideService(HttpClient.HttpClient, server),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
       );

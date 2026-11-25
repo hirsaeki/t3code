@@ -184,12 +184,15 @@ export const make = Effect.gen(function* () {
     settings: ServerSettings | null,
   ) {
     const previous = yield* Ref.get(stateRef);
-    yield* publish(previous.filter((source) => {
-      const config = settings?.usageLimitSources[source.id];
-      const keep = isSelected(config) && readConfigurations.get(source.id) === JSON.stringify(config);
-      if (!keep) readConfigurations.delete(source.id);
-      return keep;
-    }));
+    yield* publish(
+      previous.filter((source) => {
+        const config = settings?.usageLimitSources[source.id];
+        const keep =
+          isSelected(config) && readConfigurations.get(source.id) === JSON.stringify(config);
+        if (!keep) readConfigurations.delete(source.id);
+        return keep;
+      }),
+    );
   });
 
   const refreshLock = yield* Semaphore.make(1);
@@ -198,42 +201,50 @@ export const make = Effect.gen(function* () {
       Effect.orElseSucceed((): ServerSettings | null => null),
     );
     yield* discardUnselected(settings);
-    const entries = Object.entries(settings?.usageLimitSources ?? {}).filter(
-      ([, config]) => isSelected(config),
+    const entries = Object.entries(settings?.usageLimitSources ?? {}).filter(([, config]) =>
+      isSelected(config),
     );
     const snapshots = yield* Effect.forEach(
       entries,
       ([id, config]) => readSource(id as UsageLimitSourceId, config),
       { concurrency: 4 },
     );
-    yield* settingsService.withSettingsSnapshot((current) => Effect.suspend(() => {
-      const next = snapshots.filter((source) => {
-        const config = current.usageLimitSources[source.id];
-        const requested = settings?.usageLimitSources[source.id];
-        if (!isSelected(config) || JSON.stringify(config) !== JSON.stringify(requested)) return false;
-        readConfigurations.set(source.id, JSON.stringify(config));
-        return true;
-      });
-      for (const id of readConfigurations.keys()) {
-        if (!next.some((source) => source.id === id)) readConfigurations.delete(id);
-      }
-      return publish(next);
-    }));
+    yield* settingsService.withSettingsSnapshot((current) =>
+      Effect.suspend(() => {
+        const next = snapshots.filter((source) => {
+          const config = current.usageLimitSources[source.id];
+          const requested = settings?.usageLimitSources[source.id];
+          if (!isSelected(config) || JSON.stringify(config) !== JSON.stringify(requested))
+            return false;
+          readConfigurations.set(source.id, JSON.stringify(config));
+          return true;
+        });
+        for (const id of readConfigurations.keys()) {
+          if (!next.some((source) => source.id === id)) readConfigurations.delete(id);
+        }
+        return publish(next);
+      }),
+    );
   }).pipe(refreshLock.withPermits(1), Effect.ignoreCause({ log: true }));
 
   const consumeResetCredit = (_input: UsageLimitSourceConsumeResetCreditInput) =>
-    Effect.fail(new UsageLimitSourceError({
-      detail: "Reset credits are unavailable through CLIProxyAPI. Use the provider's native client.",
-    }));
+    Effect.fail(
+      new UsageLimitSourceError({
+        detail:
+          "Reset credits are unavailable through CLIProxyAPI. Use the provider's native client.",
+      }),
+    );
 
   yield* settingsService.streamChanges.pipe(
     Stream.map((settings) => JSON.stringify(settings.usageLimitSources)),
     Stream.changes,
-    Stream.runForEach(() => settingsService.getSettings.pipe(
-      Effect.orElseSucceed((): ServerSettings | null => null),
-      Effect.flatMap(discardUnselected),
-      Effect.andThen(refresh),
-    )),
+    Stream.runForEach(() =>
+      settingsService.getSettings.pipe(
+        Effect.orElseSucceed((): ServerSettings | null => null),
+        Effect.flatMap(discardUnselected),
+        Effect.andThen(refresh),
+      ),
+    ),
     Effect.forkScoped,
   );
 

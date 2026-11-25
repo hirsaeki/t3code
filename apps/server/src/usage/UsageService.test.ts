@@ -574,9 +574,10 @@ describe("UsageService", () => {
         const service = yield* UsageService.make.pipe(
           Effect.provideService(FileSystem.FileSystem, {
             ...fileSystem,
-            realPath: (file) => Effect.sync(() => { resolved.push(file); }).pipe(
-              Effect.andThen(fileSystem.realPath(file)),
-            ),
+            realPath: (file) =>
+              Effect.sync(() => {
+                resolved.push(file);
+              }).pipe(Effect.andThen(fileSystem.realPath(file))),
           }),
           Effect.provideService(CursorUsageAccounts.CursorUsageAccounts, {
             scan: () => Effect.die("An unselected Cursor account must not be queried"),
@@ -588,133 +589,182 @@ describe("UsageService", () => {
         assert.deepStrictEqual(summary.buckets, []);
         assert.deepStrictEqual(summary.sources, []);
         assert.deepStrictEqual(resolved.filter(isExternal), []);
-        assert.deepStrictEqual(opens.mock.calls.filter(([file]) => isExternal(file)), []);
-        assert.deepStrictEqual(stats.mock.calls.filter(([file]) => isExternal(file)), []);
-      }).pipe(Effect.provide(layerService({
-        prefix: "usage-unselected",
-        home,
-        settings: { providerInstances: {
-          [ProviderInstanceId.make("claudeAgent")]: {
-            driver: ProviderDriverKind.make("claudeAgent"),
-            enabled: true,
-            config: { homePath: NodePath.join(home, "claude") },
-          },
-          [ProviderInstanceId.make("codex")]: {
-            driver: ProviderDriverKind.make("codex"),
-            enabled: false,
-            usageHistoryEnabled: true,
-            config: { homePath: NodePath.join(home, "disabled-codex") },
-          },
-        } },
-      })));
+        assert.deepStrictEqual(
+          opens.mock.calls.filter(([file]) => isExternal(file)),
+          [],
+        );
+        assert.deepStrictEqual(
+          stats.mock.calls.filter(([file]) => isExternal(file)),
+          [],
+        );
+      }).pipe(
+        Effect.provide(
+          layerService({
+            prefix: "usage-unselected",
+            home,
+            settings: {
+              providerInstances: {
+                [ProviderInstanceId.make("claudeAgent")]: {
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  enabled: true,
+                  config: { homePath: NodePath.join(home, "claude") },
+                },
+                [ProviderInstanceId.make("codex")]: {
+                  driver: ProviderDriverKind.make("codex"),
+                  enabled: false,
+                  usageHistoryEnabled: true,
+                  config: { homePath: NodePath.join(home, "disabled-codex") },
+                },
+              },
+            },
+          }),
+        ),
+      );
     }),
   );
 
-  it.effect("disabling a source clears its derived records and dictionaries, preserving other sources and native files", () =>
-    Effect.gen(function* () {
-      const { home, transcript, settings } = yield* setup;
-      const secondHome = NodePath.join(home, "second-claude");
-      const secondFile = NodePath.join(secondHome, "projects", "session.jsonl");
-      const firstContent = claudeLine(1, 5, "revoked-model", "revoked-session");
-      const secondContent = claudeLine(2, 7, "kept-model", "kept-session");
-      yield* Effect.promise(async () => {
-        await NodeFSP.writeFile(transcript, firstContent);
-        await NodeFSP.mkdir(NodePath.dirname(secondFile), { recursive: true });
-        await NodeFSP.writeFile(secondFile, secondContent);
-      });
-      yield* Effect.gen(function* () {
-        const config = yield* ServerSettings.ServerSettingsService;
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const service = yield* UsageService.make;
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
-        yield* service.awaitPersisted;
-        const current = yield* config.getSettings;
-        yield* config.updateSettings({ providerInstances: {
-          ...current.providerInstances,
-          [ProviderInstanceId.make("claudeAgent")]: {
-            ...current.providerInstances[ProviderInstanceId.make("claudeAgent")]!,
-            usageHistoryEnabled: false,
-          },
-        } });
-        yield* service.awaitPersisted;
-        const saved = yield* Effect.promise(() => NodeFSP.readFile(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME), "utf8"));
-        assert.notInclude(saved, "revoked-session");
-        assert.notInclude(saved, "revoked-model");
-        assert.notInclude(saved, NodePath.join(home, "claude", "projects"));
-        assert.include(saved, "kept-session");
-        assert.strictEqual(yield* Effect.promise(() => NodeFSP.readFile(transcript, "utf8")), firstContent);
-        assert.strictEqual(yield* Effect.promise(() => NodeFSP.readFile(secondFile, "utf8")), secondContent);
-        const restarted = yield* UsageService.make;
-        assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 7);
-      }).pipe(Effect.provide(layerService({
-        prefix: "usage-source-revoke",
-        home,
-        settings: { ...settings, providerInstances: {
-          ...settings.providerInstances,
-          [ProviderInstanceId.make("claude-second")]: {
-            driver: ProviderDriverKind.make("claudeAgent"),
-            enabled: true,
-            usageHistoryEnabled: true,
-            config: { homePath: secondHome },
-          },
-        } },
-      })));
-    }),
+  it.effect(
+    "disabling a source clears its derived records and dictionaries, preserving other sources and native files",
+    () =>
+      Effect.gen(function* () {
+        const { home, transcript, settings } = yield* setup;
+        const secondHome = NodePath.join(home, "second-claude");
+        const secondFile = NodePath.join(secondHome, "projects", "session.jsonl");
+        const firstContent = claudeLine(1, 5, "revoked-model", "revoked-session");
+        const secondContent = claudeLine(2, 7, "kept-model", "kept-session");
+        yield* Effect.promise(async () => {
+          await NodeFSP.writeFile(transcript, firstContent);
+          await NodeFSP.mkdir(NodePath.dirname(secondFile), { recursive: true });
+          await NodeFSP.writeFile(secondFile, secondContent);
+        });
+        yield* Effect.gen(function* () {
+          const config = yield* ServerSettings.ServerSettingsService;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const service = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
+          yield* service.awaitPersisted;
+          const current = yield* config.getSettings;
+          yield* config.updateSettings({
+            providerInstances: {
+              ...current.providerInstances,
+              [ProviderInstanceId.make("claudeAgent")]: {
+                ...current.providerInstances[ProviderInstanceId.make("claudeAgent")]!,
+                usageHistoryEnabled: false,
+              },
+            },
+          });
+          yield* service.awaitPersisted;
+          const saved = yield* Effect.promise(() =>
+            NodeFSP.readFile(NodePath.join(stateDir, SCAN_CACHE_FILE_NAME), "utf8"),
+          );
+          assert.notInclude(saved, "revoked-session");
+          assert.notInclude(saved, "revoked-model");
+          assert.notInclude(saved, NodePath.join(home, "claude", "projects"));
+          assert.include(saved, "kept-session");
+          assert.strictEqual(
+            yield* Effect.promise(() => NodeFSP.readFile(transcript, "utf8")),
+            firstContent,
+          );
+          assert.strictEqual(
+            yield* Effect.promise(() => NodeFSP.readFile(secondFile, "utf8")),
+            secondContent,
+          );
+          const restarted = yield* UsageService.make;
+          assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(WINDOW)), 7);
+        }).pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-source-revoke",
+              home,
+              settings: {
+                ...settings,
+                providerInstances: {
+                  ...settings.providerInstances,
+                  [ProviderInstanceId.make("claude-second")]: {
+                    driver: ProviderDriverKind.make("claudeAgent"),
+                    enabled: true,
+                    usageHistoryEnabled: true,
+                    config: { homePath: secondHome },
+                  },
+                },
+              },
+            }),
+          ),
+        );
+      }),
   );
 
   it.effect.each(["source selection", "retention"] as const)(
     "an in-flight scan cannot publish or recreate its persisted history after %s changes",
     (changed) =>
-    Effect.gen(function* () {
-      const { home, transcript, settings } = yield* setup;
-      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5, "revoked-model", "revoked-session")));
-      yield* TestClock.setTime(Date.parse("2026-08-10T00:00:00Z"));
-      const started = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      yield* Effect.gen(function* () {
-        const config = yield* ServerSettings.ServerSettingsService;
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const service = yield* UsageService.make.pipe(
-          Effect.provideService(CursorUsageAccounts.CursorUsageAccounts, {
-            scan: () => Deferred.succeed(started, undefined).pipe(
-              Effect.andThen(Deferred.await(release)), Effect.as([]),
-            ),
-            awaitPersisted: Effect.void,
-            invalidate: () => Effect.void,
-          }),
+      Effect.gen(function* () {
+        const { home, transcript, settings } = yield* setup;
+        yield* Effect.promise(() =>
+          NodeFSP.writeFile(transcript, claudeLine(1, 5, "revoked-model", "revoked-session")),
         );
-        const scan = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
-        yield* Deferred.await(started);
-        const current = yield* config.getSettings;
-        yield* config.updateSettings(changed === "retention"
-          ? { usageHistoryRetentionDays: 1 }
-          : { providerInstances: Object.fromEntries(
-              Object.entries(current.providerInstances).map(([id, instance]) => [id, {
-                ...instance, usageHistoryEnabled: false, accountUsageEnabled: false,
-              }]),
-            ) });
-        yield* service.awaitPersisted;
-        yield* Deferred.succeed(release, undefined);
-        assert.isTrue(Exit.isFailure(yield* Fiber.await(scan)));
-        yield* service.awaitPersisted;
-        const restarted = yield* UsageService.make;
-        assert.deepStrictEqual((yield* restarted.readSummary(WINDOW)).buckets, []);
-        yield* restarted.awaitPersisted;
-        const fs = yield* FileSystem.FileSystem;
-        const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
-        if (changed === "source selection") {
-          assert.isFalse(yield* fs.exists(cachePath));
-        } else {
-          const persisted = yield* fs.readFileString(cachePath);
-          assert.notInclude(persisted, "revoked-session");
-          assert.notInclude(persisted, "revoked-model");
-        }
-        assert.isTrue(yield* fs.exists(transcript));
-      }).pipe(Effect.provide(layerService({
-        prefix: "usage-scan-revoke", home,
-        settings: { ...settings, usageHistoryRetentionDays: "unlimited" },
-      })));
-    }),
+        yield* TestClock.setTime(Date.parse("2026-08-10T00:00:00Z"));
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          const config = yield* ServerSettings.ServerSettingsService;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const service = yield* UsageService.make.pipe(
+            Effect.provideService(CursorUsageAccounts.CursorUsageAccounts, {
+              scan: () =>
+                Deferred.succeed(started, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.as([]),
+                ),
+              awaitPersisted: Effect.void,
+              invalidate: () => Effect.void,
+            }),
+          );
+          const scan = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+          yield* Deferred.await(started);
+          const current = yield* config.getSettings;
+          yield* config.updateSettings(
+            changed === "retention"
+              ? { usageHistoryRetentionDays: 1 }
+              : {
+                  providerInstances: Object.fromEntries(
+                    Object.entries(current.providerInstances).map(([id, instance]) => [
+                      id,
+                      {
+                        ...instance,
+                        usageHistoryEnabled: false,
+                        accountUsageEnabled: false,
+                      },
+                    ]),
+                  ),
+                },
+          );
+          yield* service.awaitPersisted;
+          yield* Deferred.succeed(release, undefined);
+          assert.isTrue(Exit.isFailure(yield* Fiber.await(scan)));
+          yield* service.awaitPersisted;
+          const restarted = yield* UsageService.make;
+          assert.deepStrictEqual((yield* restarted.readSummary(WINDOW)).buckets, []);
+          yield* restarted.awaitPersisted;
+          const fs = yield* FileSystem.FileSystem;
+          const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+          if (changed === "source selection") {
+            assert.isFalse(yield* fs.exists(cachePath));
+          } else {
+            const persisted = yield* fs.readFileString(cachePath);
+            assert.notInclude(persisted, "revoked-session");
+            assert.notInclude(persisted, "revoked-model");
+          }
+          assert.isTrue(yield* fs.exists(transcript));
+        }).pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-scan-revoke",
+              home,
+              settings: { ...settings, usageHistoryRetentionDays: "unlimited" },
+            }),
+          ),
+        );
+      }),
   );
 
   it.effect("clears malformed and superseded cache files even when no records can be decoded", () =>
@@ -722,71 +772,111 @@ describe("UsageService", () => {
       const { home } = yield* setup;
       yield* Effect.gen(function* () {
         const { stateDir } = yield* ServerConfig.ServerConfig;
-        const files = [SCAN_CACHE_FILE_NAME, "usage-scan-cache-v17.json", "usage-cursor-account-cache-v2.json"];
+        const files = [
+          SCAN_CACHE_FILE_NAME,
+          "usage-scan-cache-v17.json",
+          "usage-cursor-account-cache-v2.json",
+        ];
         yield* Effect.promise(async () => {
           await NodeFSP.mkdir(stateDir, { recursive: true });
-          for (const file of files) await NodeFSP.writeFile(NodePath.join(stateDir, file), '{"session":"revoked-session"');
+          for (const file of files)
+            await NodeFSP.writeFile(NodePath.join(stateDir, file), '{"session":"revoked-session"');
         });
-        const service = yield* makeWithCursor(() => Effect.die("Unselected accounts must not be read"));
+        const service = yield* makeWithCursor(() =>
+          Effect.die("Unselected accounts must not be read"),
+        );
         yield* service.awaitPersisted;
         const remaining = yield* Effect.promise(() => NodeFSP.readdir(stateDir));
-        assert.deepStrictEqual(remaining.filter((file) => files.includes(file)), []);
-      }).pipe(Effect.provide(layerService({ prefix: "usage-corrupt-cache-purge", home, settings: {} })));
+        assert.deepStrictEqual(
+          remaining.filter((file) => files.includes(file)),
+          [],
+        );
+      }).pipe(
+        Effect.provide(layerService({ prefix: "usage-corrupt-cache-purge", home, settings: {} })),
+      );
     }),
   );
 
-  it.effect("purges old Cursor key records on rotation and disables startup and manual account reads", () =>
-    Effect.gen(function* () {
-      const { home } = yield* setup;
-      yield* TestClock.setTime(CURSOR_NOW);
-      const cursor = makeFakeCursor();
-      cursor.state.events = [{ timestampMs: CURSOR_NOW - HOUR_MS, outputTokens: 5 }];
-      const instanceId = ProviderInstanceId.make("cursor");
-      yield* Effect.gen(function* () {
-        const config = yield* ServerSettings.ServerSettingsService;
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const cachePath = NodePath.join(stateDir, "usage-cursor-account-cache-v2.json");
-        const service = yield* makeWithCursor(cursor.read);
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary({ ...WINDOW, awaitRefresh: true })), 5);
-        yield* service.awaitPersisted;
-        const before = yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8"));
-        assert.include(before, "account-a");
-        const oldKey = before.match(/api-key:[a-f0-9]{64}/)?.[0];
-        assert.isDefined(oldKey);
+  it.effect(
+    "purges old Cursor key records on rotation and disables startup and manual account reads",
+    () =>
+      Effect.gen(function* () {
+        const { home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const cursor = makeFakeCursor();
+        cursor.state.events = [{ timestampMs: CURSOR_NOW - HOUR_MS, outputTokens: 5 }];
+        const instanceId = ProviderInstanceId.make("cursor");
+        yield* Effect.gen(function* () {
+          const config = yield* ServerSettings.ServerSettingsService;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const cachePath = NodePath.join(stateDir, "usage-cursor-account-cache-v2.json");
+          const service = yield* makeWithCursor(cursor.read);
+          assert.strictEqual(
+            totalOutputTokens(yield* service.readSummary({ ...WINDOW, awaitRefresh: true })),
+            5,
+          );
+          yield* service.awaitPersisted;
+          const before = yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8"));
+          assert.include(before, "account-a");
+          const oldKey = before.match(/api-key:[a-f0-9]{64}/)?.[0];
+          assert.isDefined(oldKey);
 
-        const current = yield* config.getSettings;
-        const rotated = {
-          ...current.providerInstances[instanceId]!,
-          environment: [{ name: "CURSOR_API_KEY", value: "rotated-key", sensitive: true }],
-        };
-        yield* config.updateSettings({ providerInstances: { [instanceId]: rotated } });
-        yield* service.awaitPersisted;
-        assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(cachePath));
-        cursor.state.accountKey = "account-b";
-        assert.strictEqual(totalOutputTokens(yield* service.readSummary({ ...WINDOW, awaitRefresh: true })), 5);
-        yield* service.awaitPersisted;
-        const after = yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8"));
-        assert.notInclude(after, "account-a");
-        assert.notInclude(after, oldKey!);
-        assert.include(after, "account-b");
+          const current = yield* config.getSettings;
+          const rotated = {
+            ...current.providerInstances[instanceId]!,
+            environment: [{ name: "CURSOR_API_KEY", value: "rotated-key", sensitive: true }],
+          };
+          yield* config.updateSettings({ providerInstances: { [instanceId]: rotated } });
+          yield* service.awaitPersisted;
+          assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(cachePath));
+          cursor.state.accountKey = "account-b";
+          assert.strictEqual(
+            totalOutputTokens(yield* service.readSummary({ ...WINDOW, awaitRefresh: true })),
+            5,
+          );
+          yield* service.awaitPersisted;
+          const after = yield* Effect.promise(() => NodeFSP.readFile(cachePath, "utf8"));
+          assert.notInclude(after, "account-a");
+          assert.notInclude(after, oldKey!);
+          assert.include(after, "account-b");
 
-        yield* config.updateSettings({ providerInstances: { [instanceId]: { ...rotated, enabled: false } } });
-        yield* service.awaitPersisted;
-        assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(cachePath));
-        const requests = cursor.state.calls.length;
-        assert.deepStrictEqual((yield* service.readSummary({ ...WINDOW, awaitRefresh: true })).buckets, []);
-        const restarted = yield* makeWithCursor(cursor.read);
-        assert.deepStrictEqual((yield* restarted.readSummary({ ...WINDOW, awaitRefresh: true })).buckets, []);
-        assert.strictEqual(cursor.state.calls.length, requests);
-      }).pipe(Effect.provide(layerService({
-        prefix: "usage-cursor-rotation-purge",
-        home,
-        settings: { providerInstances: { [instanceId]: {
-          driver: ProviderDriverKind.make("cursor"), enabled: true, accountUsageEnabled: true,
-          environment: [{ name: "CURSOR_API_KEY", value: "original-key", sensitive: true }],
-        } } },
-      })));
-    }),
+          yield* config.updateSettings({
+            providerInstances: { [instanceId]: { ...rotated, enabled: false } },
+          });
+          yield* service.awaitPersisted;
+          assert.isFalse(yield* (yield* FileSystem.FileSystem).exists(cachePath));
+          const requests = cursor.state.calls.length;
+          assert.deepStrictEqual(
+            (yield* service.readSummary({ ...WINDOW, awaitRefresh: true })).buckets,
+            [],
+          );
+          const restarted = yield* makeWithCursor(cursor.read);
+          assert.deepStrictEqual(
+            (yield* restarted.readSummary({ ...WINDOW, awaitRefresh: true })).buckets,
+            [],
+          );
+          assert.strictEqual(cursor.state.calls.length, requests);
+        }).pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-cursor-rotation-purge",
+              home,
+              settings: {
+                providerInstances: {
+                  [instanceId]: {
+                    driver: ProviderDriverKind.make("cursor"),
+                    enabled: true,
+                    accountUsageEnabled: true,
+                    environment: [
+                      { name: "CURSOR_API_KEY", value: "original-key", sensitive: true },
+                    ],
+                  },
+                },
+              },
+            }),
+          ),
+        );
+      }),
   );
 
   it.effect("keeps pricing metadata paired with the rates used during a concurrent refresh", () =>
@@ -2191,59 +2281,75 @@ describe("UsageService", () => {
       }),
   );
 
-  it.effect("drops an in-flight Cursor response when retention changes and clamps later reads to current retention", () =>
-    Effect.gen(function* () {
-      const { settings, home } = yield* setup;
-      yield* TestClock.setTime(CURSOR_NOW);
-      const cursor = makeFakeCursor();
-      cursor.state.gate = yield* Deferred.make<void>();
-      cursor.state.started = yield* Deferred.make<void>();
-      const expiredTimestamp = CURSOR_NOW - 3 * 24 * HOUR_MS;
-      cursor.state.events = [
-        { timestampMs: expiredTimestamp, outputTokens: 5 },
-        { timestampMs: CURSOR_NOW - HOUR_MS, outputTokens: 7 },
-      ];
-      yield* Effect.gen(function* () {
-        const config = yield* ServerSettings.ServerSettingsService;
-        const { stateDir } = yield* ServerConfig.ServerConfig;
-        const fs = yield* FileSystem.FileSystem;
-        const context = yield* Layer.build(layerCursorUsageAccounts(
-          Layer.succeed(CursorAccountReader.CursorAccountReader, { read: cursor.read }),
-        ));
-        const accounts = Context.get(context, CursorUsageAccounts.CursorUsageAccounts);
-        const input = {
-          instances: [{ instanceId: ProviderInstanceId.make("cursor"), environment: { CURSOR_API_KEY: "test-key" } }],
-          windowStartMs: 0,
-          retentionCutoffMs: 0,
-          awaitRefresh: true,
-        };
-        const pending = yield* accounts.scan(input).pipe(Effect.forkChild);
-        yield* Deferred.await(cursor.state.started!);
-        yield* config.updateSettings({ usageHistoryRetentionDays: 1 });
-        yield* accounts.awaitPersisted;
-        yield* Deferred.succeed(cursor.state.gate!, undefined);
-        assert.deepStrictEqual(yield* Fiber.join(pending), []);
-        assert.strictEqual(cursor.state.calls.length, 1);
-        yield* accounts.awaitPersisted;
-        const cachePath = NodePath.join(stateDir, "usage-cursor-account-cache-v2.json");
-        assert.isFalse(yield* fs.exists(cachePath));
+  it.effect(
+    "drops an in-flight Cursor response when retention changes and clamps later reads to current retention",
+    () =>
+      Effect.gen(function* () {
+        const { settings, home } = yield* setup;
+        yield* TestClock.setTime(CURSOR_NOW);
+        const cursor = makeFakeCursor();
+        cursor.state.gate = yield* Deferred.make<void>();
+        cursor.state.started = yield* Deferred.make<void>();
+        const expiredTimestamp = CURSOR_NOW - 3 * 24 * HOUR_MS;
+        cursor.state.events = [
+          { timestampMs: expiredTimestamp, outputTokens: 5 },
+          { timestampMs: CURSOR_NOW - HOUR_MS, outputTokens: 7 },
+        ];
+        yield* Effect.gen(function* () {
+          const config = yield* ServerSettings.ServerSettingsService;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const fs = yield* FileSystem.FileSystem;
+          const context = yield* Layer.build(
+            layerCursorUsageAccounts(
+              Layer.succeed(CursorAccountReader.CursorAccountReader, { read: cursor.read }),
+            ),
+          );
+          const accounts = Context.get(context, CursorUsageAccounts.CursorUsageAccounts);
+          const input = {
+            instances: [
+              {
+                instanceId: ProviderInstanceId.make("cursor"),
+                environment: { CURSOR_API_KEY: "test-key" },
+              },
+            ],
+            windowStartMs: 0,
+            retentionCutoffMs: 0,
+            awaitRefresh: true,
+          };
+          const pending = yield* accounts.scan(input).pipe(Effect.forkChild);
+          yield* Deferred.await(cursor.state.started!);
+          yield* config.updateSettings({ usageHistoryRetentionDays: 1 });
+          yield* accounts.awaitPersisted;
+          yield* Deferred.succeed(cursor.state.gate!, undefined);
+          assert.deepStrictEqual(yield* Fiber.join(pending), []);
+          assert.strictEqual(cursor.state.calls.length, 1);
+          yield* accounts.awaitPersisted;
+          const cachePath = NodePath.join(stateDir, "usage-cursor-account-cache-v2.json");
+          assert.isFalse(yield* fs.exists(cachePath));
 
-        // A stale caller cannot expand a later request beyond the server's current retention.
-        const sources = yield* accounts.scan(input);
-        assert.deepStrictEqual(cursor.state.calls[1], {
-          sinceMs: CURSOR_NOW - 24 * HOUR_MS,
-          untilMs: CURSOR_NOW,
-        });
-        assert.deepStrictEqual(sources[0]?.files?.[0]?.records.map((record) => record.timestampMs), [CURSOR_NOW - HOUR_MS]);
-        yield* accounts.awaitPersisted;
-        assert.notInclude(yield* fs.readFileString(cachePath), String(expiredTimestamp));
-      }).pipe(Effect.provide(layerService({
-        prefix: "usage-cursor-retention-race",
-        home,
-        settings: { ...settings, usageHistoryRetentionDays: "unlimited" },
-        environment: { CURSOR_API_KEY: "test-key" },
-      })));
-    }),
+          // A stale caller cannot expand a later request beyond the server's current retention.
+          const sources = yield* accounts.scan(input);
+          assert.deepStrictEqual(cursor.state.calls[1], {
+            sinceMs: CURSOR_NOW - 24 * HOUR_MS,
+            untilMs: CURSOR_NOW,
+          });
+          assert.deepStrictEqual(
+            sources[0]?.files?.[0]?.records.map((record) => record.timestampMs),
+            [CURSOR_NOW - HOUR_MS],
+          );
+          yield* accounts.awaitPersisted;
+          assert.notInclude(yield* fs.readFileString(cachePath), String(expiredTimestamp));
+        }).pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-cursor-retention-race",
+              home,
+              settings: { ...settings, usageHistoryRetentionDays: "unlimited" },
+              environment: { CURSOR_API_KEY: "test-key" },
+            }),
+          ),
+        );
+      }),
   );
 
   it.effect("widens Cursor history after awaiting a shared narrower refresh", () =>
@@ -2556,17 +2662,22 @@ describe("UsageService", () => {
             settings: {
               ...settings,
               usageHistoryRetentionDays: "unlimited",
-              providerInstances: Object.fromEntries([
-                ["cursor", "failing-key"],
-                ["cursor-work", "new-key"],
-                ["cursor-third", "third-key"],
-                ["cursor-fourth", "fourth-key"],
-              ].map(([id, apiKey]) => [ProviderInstanceId.make(id!), {
-                driver: ProviderDriverKind.make("cursor"),
-                enabled: true,
-                accountUsageEnabled: true,
-                environment: [{ name: "CURSOR_API_KEY", value: apiKey!, sensitive: true }],
-              }])),
+              providerInstances: Object.fromEntries(
+                [
+                  ["cursor", "failing-key"],
+                  ["cursor-work", "new-key"],
+                  ["cursor-third", "third-key"],
+                  ["cursor-fourth", "fourth-key"],
+                ].map(([id, apiKey]) => [
+                  ProviderInstanceId.make(id!),
+                  {
+                    driver: ProviderDriverKind.make("cursor"),
+                    enabled: true,
+                    accountUsageEnabled: true,
+                    environment: [{ name: "CURSOR_API_KEY", value: apiKey!, sensitive: true }],
+                  },
+                ]),
+              ),
             },
             platform: "linux",
             environment: {},
@@ -3118,7 +3229,10 @@ describe("UsageService", () => {
         NodeFSP.rm(NodePath.join(codexHome, "sessions"), { recursive: true }),
       );
       const removed = yield* service.readSummary(WINDOW);
-      assert.deepStrictEqual(removed.buckets, summary.buckets.filter((bucket) => bucket.provider !== "codex"));
+      assert.deepStrictEqual(
+        removed.buckets,
+        summary.buckets.filter((bucket) => bucket.provider !== "codex"),
+      );
 
       const sources = summary.sources.filter((source) => source.status === "ok");
       assert.strictEqual(sources.length, 4);
@@ -3827,10 +3941,7 @@ describe("UsageService", () => {
           yield* restarted.awaitPersisted;
           yield* Effect.promise(() => NodeFSP.rm(transcript));
           const afterCleanup = yield* UsageService.make;
-          assert.deepStrictEqual(
-            (yield* afterCleanup.readSummary(WINDOW)).buckets,
-            [],
-          );
+          assert.deepStrictEqual((yield* afterCleanup.readSummary(WINDOW)).buckets, []);
         }).pipe(
           Effect.scoped,
           Effect.provide(

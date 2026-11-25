@@ -1455,7 +1455,9 @@ describe("/usage-limits", () => {
     const report = collectProviderUsageLimits(selected.instanceId, [selected], hubs, now);
     expect(report?.accounts[0]?.limits.resetCredits).toBeUndefined();
     expect(report?.accounts[0]?.resetCreditInput).toEqual({ instanceId: selected.instanceId });
-    expect(report?.accounts.find((account) => account.id === "hub:oss")?.resetCreditInput).toBeUndefined();
+    expect(
+      report?.accounts.find((account) => account.id === "hub:oss")?.resetCreditInput,
+    ).toBeUndefined();
   });
 
   it("gives a hub credit to no native row when its email is signed in to two workspaces", () => {

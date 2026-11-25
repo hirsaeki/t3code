@@ -154,72 +154,98 @@ const enrichedSnapshotSecond: ServerProvider = {
 };
 
 describe("makeManagedServerProvider", () => {
-  it.effect("keeps account usage absent on startup, manual refresh, periodic work and native callbacks without consent", () =>
-    Effect.scoped(Effect.gen(function* () {
-      let accountRequests = 0;
-      let invalidations = 0;
-      const usageLimits = {
-        checkedAt: refreshedSnapshot.checkedAt,
-        windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 50 }],
-      } as const;
-      const provider = yield* makeManagedServerProvider<TestSettings>({
-        resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
-        getSettings: Effect.succeed({ enabled: true }),
-        streamSettings: Stream.empty,
-        haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
-        initialSnapshot: () => Effect.succeed({ ...refreshedSnapshot, usageLimits }),
-        checkProvider: Effect.succeed({ ...refreshedSnapshot, usageLimits }),
-        checkUsageLimits: Effect.sync(() => { accountRequests++; return usageLimits; }),
-        invalidateUsageCache: Effect.sync(() => { invalidations++; }),
-        refreshOnInterval: false,
-        refreshInterval: "1 minute",
-      });
-      yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
-      assert.isUndefined((yield* provider.getSnapshot).usageLimits);
-      yield* provider.refreshUsage!;
-      yield* provider.refresh;
-      yield* provider.applyUsageLimits({ ...usageLimits, complete: true });
-      yield* TestClock.adjust("2 minutes");
-      assert.isUndefined((yield* provider.getSnapshot).usageLimits);
-      assert.strictEqual(accountRequests, 0);
-      assert.strictEqual(invalidations, 0);
-    })).pipe(Effect.provide(layerProviderHost({
-      runBackgroundWork: true,
-      settings: {
-        get: Effect.succeed(DEFAULT_SERVER_SETTINGS),
-        withSnapshot: (use) => use(DEFAULT_SERVER_SETTINGS),
-        changes: Stream.empty,
-        subscribe: Effect.succeed(Stream.empty),
-      },
-    }))),
+  it.effect(
+    "keeps account usage absent on startup, manual refresh, periodic work and native callbacks without consent",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let accountRequests = 0;
+          let invalidations = 0;
+          const usageLimits = {
+            checkedAt: refreshedSnapshot.checkedAt,
+            windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 50 }],
+          } as const;
+          const provider = yield* makeManagedServerProvider<TestSettings>({
+            resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+            getSettings: Effect.succeed({ enabled: true }),
+            streamSettings: Stream.empty,
+            haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+            initialSnapshot: () => Effect.succeed({ ...refreshedSnapshot, usageLimits }),
+            checkProvider: Effect.succeed({ ...refreshedSnapshot, usageLimits }),
+            checkUsageLimits: Effect.sync(() => {
+              accountRequests++;
+              return usageLimits;
+            }),
+            invalidateUsageCache: Effect.sync(() => {
+              invalidations++;
+            }),
+            refreshOnInterval: false,
+            refreshInterval: "1 minute",
+          });
+          yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
+          assert.isUndefined((yield* provider.getSnapshot).usageLimits);
+          yield* provider.refreshUsage!;
+          yield* provider.refresh;
+          yield* provider.applyUsageLimits({ ...usageLimits, complete: true });
+          yield* TestClock.adjust("2 minutes");
+          assert.isUndefined((yield* provider.getSnapshot).usageLimits);
+          assert.strictEqual(accountRequests, 0);
+          assert.strictEqual(invalidations, 0);
+        }),
+      ).pipe(
+        Effect.provide(
+          layerProviderHost({
+            runBackgroundWork: true,
+            settings: {
+              get: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+              withSnapshot: (use) => use(DEFAULT_SERVER_SETTINGS),
+              changes: Stream.empty,
+              subscribe: Effect.succeed(Stream.empty),
+            },
+          }),
+        ),
+      ),
   );
 
   it.effect("never carries a prior account quota into an authenticated but unknown identity", () =>
-    Effect.scoped(Effect.gen(function* () {
-      let probes = 0;
-      const provider = yield* makeManagedServerProvider<TestSettings>({
-        resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
-        getSettings: Effect.succeed({ enabled: true }),
-        streamSettings: Stream.empty,
-        haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
-        initialSnapshot: () => Effect.succeed(initialSnapshot),
-        checkProvider: Effect.sync((): ServerProvider => ++probes === 1 ? {
-          ...refreshedSnapshot,
-          usageLimits: { checkedAt: refreshedSnapshot.checkedAt, windows: [
-            { id: "session", kind: "session", label: "Session", usedPercent: 75 },
-          ] },
-        } : {
-          ...refreshedSnapshotSecond,
-          auth: { status: "authenticated" },
-          usageLimits: { checkedAt: refreshedSnapshotSecond.checkedAt, windows: [], unavailable: { reason: "probeFailed" } },
-        }),
-      });
-      yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
-      assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 75);
-      const unknown = yield* provider.refresh;
-      assert.deepStrictEqual(unknown.usageLimits?.windows, []);
-      assert.strictEqual(unknown.usageLimits?.unavailable?.reason, "probeFailed");
-    })).pipe(Effect.provide(layerAlwaysRunTest)),
+    Effect.scoped(
+      Effect.gen(function* () {
+        let probes = 0;
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          resolveMaintenance: () => Effect.succeed(maintenanceCapabilities),
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.empty,
+          haveSettingsChanged: (previous, next) => previous.enabled !== next.enabled,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Effect.sync((): ServerProvider =>
+            ++probes === 1
+              ? {
+                  ...refreshedSnapshot,
+                  usageLimits: {
+                    checkedAt: refreshedSnapshot.checkedAt,
+                    windows: [
+                      { id: "session", kind: "session", label: "Session", usedPercent: 75 },
+                    ],
+                  },
+                }
+              : {
+                  ...refreshedSnapshotSecond,
+                  auth: { status: "authenticated" },
+                  usageLimits: {
+                    checkedAt: refreshedSnapshotSecond.checkedAt,
+                    windows: [],
+                    unavailable: { reason: "probeFailed" },
+                  },
+                },
+          ),
+        });
+        yield* Stream.take(provider.streamChanges, 1).pipe(Stream.runDrain);
+        assert.strictEqual((yield* provider.getSnapshot).usageLimits?.windows[0]?.usedPercent, 75);
+        const unknown = yield* provider.refresh;
+        assert.deepStrictEqual(unknown.usageLimits?.windows, []);
+        assert.strictEqual(unknown.usageLimits?.unavailable?.reason, "probeFailed");
+      }),
+    ).pipe(Effect.provide(layerAlwaysRunTest)),
   );
 
   it.effect("invalidates cached usage and queues one refresh behind an in-flight refresh", () =>
@@ -899,7 +925,10 @@ describe("makeManagedServerProvider", () => {
                   }
                 : {
                     ...refreshedSnapshotSecond,
-                    auth: { ...refreshedSnapshotSecond.auth, workspaceId: count === 3 ? "ws-b" : "ws-a" },
+                    auth: {
+                      ...refreshedSnapshotSecond.auth,
+                      workspaceId: count === 3 ? "ws-b" : "ws-a",
+                    },
                     usageLimits: {
                       checkedAt: "2026-04-10T00:00:03.000Z",
                       windows: [],

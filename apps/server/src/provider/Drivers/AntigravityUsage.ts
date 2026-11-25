@@ -40,15 +40,28 @@ const make = Effect.gen(function* () {
   const host = yield* ProviderHost.ProviderHost;
   let cache = makeAntigravityUsageCache();
   const settingsChanges = yield* host.settings.subscribe;
-  const selectionKey = (settings: Pick<ServerSettings, "providerInstances" | "usageHistoryRetentionDays">) =>
-    JSON.stringify([Object.entries(settings.providerInstances).filter(([, instance]) => instance.driver === "antigravity"), settings.usageHistoryRetentionDays]);
-  let previousSelection = selectionKey(yield* host.settings.get.pipe(Effect.orElseSucceed(() => ({ providerInstances: {}, usageHistoryRetentionDays: 92 }))));
+  const selectionKey = (
+    settings: Pick<ServerSettings, "providerInstances" | "usageHistoryRetentionDays">,
+  ) =>
+    JSON.stringify([
+      Object.entries(settings.providerInstances).filter(
+        ([, instance]) => instance.driver === "antigravity",
+      ),
+      settings.usageHistoryRetentionDays,
+    ]);
+  let previousSelection = selectionKey(
+    yield* host.settings.get.pipe(
+      Effect.orElseSucceed(() => ({ providerInstances: {}, usageHistoryRetentionDays: 92 })),
+    ),
+  );
   yield* settingsChanges.pipe(
-    Stream.runForEach((settings) => Effect.sync(() => {
-      const next = selectionKey(settings);
-      if (next !== previousSelection) cache = makeAntigravityUsageCache();
-      previousSelection = next;
-    })),
+    Stream.runForEach((settings) =>
+      Effect.sync(() => {
+        const next = selectionKey(settings);
+        if (next !== previousSelection) cache = makeAntigravityUsageCache();
+        previousSelection = next;
+      }),
+    ),
     Effect.forkScoped,
   );
 
@@ -61,9 +74,7 @@ const make = Effect.gen(function* () {
       .map((value) => value.trim())
       .filter(Boolean);
     const defaults = [
-      ...["antigravity", "antigravity-cli"].map((name) =>
-        path.join(home, ".gemini", name),
-      ),
+      ...["antigravity", "antigravity-cli"].map((name) => path.join(home, ".gemini", name)),
       path.join(home, ".config", "antigravity"),
     ];
     const canonical = new Set<string>();
@@ -113,13 +124,20 @@ const make = Effect.gen(function* () {
       conversationDirs.add(yield* fileSystem.realPath(dir).pipe(Effect.orElseSucceed(() => dir)));
     }
     const scanCache = cache;
-    const result = yield* readAntigravityUsage([...conversationDirs], windowStartMs, scanCache).pipe(
+    const result = yield* readAntigravityUsage(
+      [...conversationDirs],
+      windowStartMs,
+      scanCache,
+    ).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
     // Keep cross-file attribution intact during the read; then evict any database with expired records.
     for (const [file, entry] of scanCache) {
-      if (entry.data.candidates.some((candidate) => candidate.record.timestampMs < retentionCutoffMs)) scanCache.delete(file);
+      if (
+        entry.data.candidates.some((candidate) => candidate.record.timestampMs < retentionCutoffMs)
+      )
+        scanCache.delete(file);
     }
     const scanned: ProviderUsageScan[] = [];
     for (const dir of conversationDirs) {
@@ -149,5 +167,7 @@ export const antigravityUsageReader: ProviderUsageReader<AntigravitySettings, An
   provider: "antigravity",
   rateModel: antigravityRateModel,
   scan: ({ instances, windowStartMs, retentionCutoffMs }) =>
-    AntigravityUsage.pipe(Effect.flatMap((usage) => usage.scan({ instances, windowStartMs, retentionCutoffMs }))),
+    AntigravityUsage.pipe(
+      Effect.flatMap((usage) => usage.scan({ instances, windowStartMs, retentionCutoffMs })),
+    ),
 };

@@ -1007,7 +1007,13 @@ it.layer(
             });
           }),
         );
-        const fiber = yield* checkCodexProviderStatus(defaultCodexSettings, undefined, undefined, undefined, Effect.succeed(true)).pipe(
+        const fiber = yield* checkCodexProviderStatus(
+          defaultCodexSettings,
+          undefined,
+          undefined,
+          undefined,
+          Effect.succeed(true),
+        ).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.forkChild,
         );
@@ -4661,7 +4667,7 @@ it.layer(
       readSeed = false;
       const services = yield* Layer.build(
         ProviderInstanceRegistryHydration.layer.pipe(
-              Layer.provide(layerUnusedCursorUsage),
+          Layer.provide(layerUnusedCursorUsage),
           Layer.provide(
             Layer.mergeAll(
               PortScanner.layerTest,

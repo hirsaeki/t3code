@@ -1687,7 +1687,11 @@ export const isProviderAccountUsageEnabled = (
   instanceId: ProviderInstanceId,
 ): boolean => {
   const instance = settings.providerInstances[instanceId];
-  return instance !== undefined && instance.accountUsageEnabled === true && resolveProviderInstanceEnabled(instance);
+  return (
+    instance !== undefined &&
+    instance.accountUsageEnabled === true &&
+    resolveProviderInstanceEnabled(instance)
+  );
 };
 
 export const resolveProjectProviderInstanceEnabled = (

@@ -66,9 +66,7 @@ describe("provider usage permissions", () => {
     await using screen = await render(card(disabled, update));
     const history = screen.getByRole("switch", { name: "External usage history" });
     await expect.element(history).toBeEnabled();
-    await expect
-      .element(screen.getByRole("switch", { name: "Account-wide usage" }))
-      .toBeDisabled();
+    await expect.element(screen.getByRole("switch", { name: "Account-wide usage" })).toBeDisabled();
     await userEvent.click(history);
     expect(update).toHaveBeenLastCalledWith({ ...disabled, usageHistoryEnabled: false });
   });

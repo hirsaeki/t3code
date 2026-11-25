@@ -1402,7 +1402,9 @@ export function ProviderInstanceCard({
               <Switch
                 aria-label={gt("External usage history")}
                 checked={instance.usageHistoryEnabled === true}
-                disabled={readOnly || isUpdating || (!enabled && instance.usageHistoryEnabled !== true)}
+                disabled={
+                  readOnly || isUpdating || (!enabled && instance.usageHistoryEnabled !== true)
+                }
                 onCheckedChange={(value) => onUpdate({ ...instance, usageHistoryEnabled: value })}
               />
             }
@@ -1416,7 +1418,9 @@ export function ProviderInstanceCard({
               <Switch
                 aria-label={gt("Account-wide usage")}
                 checked={instance.accountUsageEnabled === true}
-                disabled={readOnly || isUpdating || (!enabled && instance.accountUsageEnabled !== true)}
+                disabled={
+                  readOnly || isUpdating || (!enabled && instance.accountUsageEnabled !== true)
+                }
                 onCheckedChange={(value) => onUpdate({ ...instance, accountUsageEnabled: value })}
               />
             }

@@ -31,11 +31,13 @@ export const makeCursorCredentialStore = Effect.fn("makeCursorCredentialStore")(
   const removeLegacy =
     legacyFile === undefined
       ? Effect.void
-      : fileSystem.remove(legacyFile).pipe(
-          Effect.catch((cause) =>
-            cause.reason._tag === "NotFound" ? Effect.void : Effect.fail(cause),
-          ),
-        );
+      : fileSystem
+          .remove(legacyFile)
+          .pipe(
+            Effect.catch((cause) =>
+              cause.reason._tag === "NotFound" ? Effect.void : Effect.fail(cause),
+            ),
+          );
   if (legacyFile !== undefined) {
     yield* Effect.gen(function* () {
       const legacy = yield* fileSystem.readFileString(legacyFile).pipe(Effect.option);

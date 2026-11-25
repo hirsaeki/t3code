@@ -192,7 +192,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerSecretStor
           assert.equal((yield* fs.stat(secretPath)).mode & 0o777, 0o600);
           yield* fs.chmod(secretPath, 0o666);
         }
-        assert.deepEqual(Option.getOrThrow(yield* secretStore.get("provider-auth-fixture")), canary);
+        assert.deepEqual(
+          Option.getOrThrow(yield* secretStore.get("provider-auth-fixture")),
+          canary,
+        );
         if (!isWindows) assert.equal((yield* fs.stat(secretPath)).mode & 0o777, 0o600);
         yield* secretStore.remove("provider-auth-fixture");
         assert.isFalse(yield* fs.exists(secretPath));
