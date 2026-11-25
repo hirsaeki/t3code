@@ -13,10 +13,12 @@ class PrivatePathError extends Schema.TaggedError<PrivatePathError>()("PrivatePa
   }
 }
 
-// chmod does not restrict Windows access. Replace inherited and explicit grants, then read back
-// the ACL before any secret is written; paths are passed as environment data, not PowerShell code.
+// chmod does not restrict Windows access. Replace and verify the ACL before writing secrets.
+// Node may inherit PowerShell 7 module paths that Windows PowerShell cannot load; use its own modules.
+// Paths are passed as environment data, not PowerShell code.
 const RESTRICT_WINDOWS_ACCESS = `
 $ErrorActionPreference = 'Stop'
+$env:PSModulePath = "$PSHOME\\Modules"
 $target = $env:T3_PRIVATE_PATH
 $directory = $env:T3_PRIVATE_DIRECTORY -eq '1'
 $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User

@@ -67,7 +67,13 @@ it.live("repairs broad directory access and creates an owner-only secret file", 
         const child = yield* spawner.spawn(
           ChildProcess.make(
             windowsPowerShellPath(environment),
-            ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
+            [
+              "-NoLogo",
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              `$env:PSModulePath = "$PSHOME\\Modules"\n${script}`,
+            ],
             {
               env: { ...environment, T3_TEST_DIRECTORY: directory, T3_TEST_FILE: filePath },
               stdin: "ignore",
@@ -103,7 +109,12 @@ Set-Acl -LiteralPath $env:T3_TEST_DIRECTORY -AclObject $acl
     } else {
       yield* fs.chmod(directory, 0o777);
     }
-    const privateFiles = yield* makePrivateFiles();
+    const privateFiles = yield* makePrivateFiles().pipe(
+      Effect.provideService(HostProcess.Environment, {
+        ...environment,
+        PSModulePath: path.join(directory, "incompatible-powershell-modules"),
+      }),
+    );
     yield* privateFiles.restrictPrivatePath(directory, "directory");
     yield* privateFiles.writePrivateFile(
       filePath,
