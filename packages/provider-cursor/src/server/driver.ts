@@ -1,6 +1,7 @@
 import {
   ProviderDriverKind,
   ProviderSetupError,
+  resolveProviderInstanceEnabled,
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import { CursorSettings } from "../settings.ts";
@@ -57,6 +58,7 @@ export type CursorDriverEnv =
   | Path.Path
   | HttpClient.HttpClient
   | CursorSdk.CursorSdk
+  | CursorUsageAccounts.CursorUsageAccounts
   | ProviderHost.ProviderHost;
 
 export const CursorDriver: ProviderDriver<
@@ -74,6 +76,7 @@ export const CursorDriver: ProviderDriver<
   usage: {
     kind: "scan",
     provider: "cursor",
+    accountWide: true,
     rateModel: cursorRateModel,
     scan: ({ instances, windowStartMs, retentionCutoffMs, awaitRefresh }) =>
       CursorUsageAccounts.CursorUsageAccounts.pipe(
@@ -96,6 +99,7 @@ export const CursorDriver: ProviderDriver<
     config,
   }) {
     const host = yield* ProviderHost.ProviderHost;
+    const usageAccounts = yield* CursorUsageAccounts.CursorUsageAccounts;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const httpClient = yield* HttpClient.HttpClient;
@@ -140,7 +144,8 @@ export const CursorDriver: ProviderDriver<
       store: credentials.store,
       credentialBinding: credentials.binding,
       onChanged: (signedIn): Effect.Effect<void, ProviderSetupError> =>
-        snapshot.refresh.pipe(
+        usageAccounts.invalidate(instanceId).pipe(
+          Effect.andThen(snapshot.refresh),
           Effect.flatMap((provider) =>
             !signedIn || provider.auth.status === "authenticated"
               ? Effect.void
@@ -236,11 +241,19 @@ export const CursorDriver: ProviderDriver<
                 snapshot.installed &&
                 snapshot.auth.status === "authenticated"
               ),
-            (snapshot) =>
-              readCursorUsageLimits(effectiveConfig, {
-                ...processEnv,
-                CURSOR_API_KEY: apiKey,
-              }).pipe(Effect.map((usageLimits) => ({ ...snapshot, usageLimits }))),
+            (snapshot) => host.settings.get.pipe(
+              Effect.map((settings) => {
+                const instance = settings.providerInstances[instanceId];
+                return instance !== undefined && instance.accountUsageEnabled === true && resolveProviderInstanceEnabled(instance);
+              }),
+              Effect.orElseSucceed(() => false),
+              Effect.flatMap((allowed) => !allowed ? Effect.succeed(snapshot) :
+                readCursorUsageLimits(effectiveConfig, {
+                  ...processEnv,
+                  CURSOR_API_KEY: apiKey,
+                }).pipe(Effect.map((usageLimits) => ({ ...snapshot, usageLimits }))),
+              ),
+            ),
           ),
         ),
       ),
@@ -281,6 +294,7 @@ export const CursorDriver: ProviderDriver<
       initialSnapshot: (settings) =>
         buildInitialCursorProviderSnapshot(settings.provider).pipe(Effect.map(stampSnapshot)),
       checkProvider,
+      invalidateUsageCache: usageAccounts.invalidate(instanceId),
     }).pipe(
       Effect.mapError(
         (cause) =>

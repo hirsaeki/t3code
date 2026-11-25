@@ -84,43 +84,6 @@ function sourceLabel(id: string, config: UsageLimitSourceConfig): string {
   }
 }
 
-/**
- * A refused read of one account keeps its last good reading, as provider probes keep their bars
- * (see ServerProviderUsageLimits); a reading with none to keep stays listed as unreadable.
- */
-function keepLastGoodReadings(
-  previous: ReadonlyArray<UsageLimitSourceSnapshot>,
-  next: ReadonlyArray<UsageLimitSourceSnapshot>,
-): ReadonlyArray<UsageLimitSourceSnapshot> {
-  return next.map((source) => {
-    // Auth file names can be reused, so only the same hub and login may lend a reading.
-    const before = previous.find(
-      (candidate) => candidate.id === source.id && candidate.endpoint === source.endpoint,
-    );
-    if (!before) return source;
-    return {
-      ...source,
-      accounts: source.accounts.map((account) => {
-        if (account.usageLimits.unavailable?.reason !== "probeFailed") return account;
-        // Without a listed login, a reused auth file name cannot be told apart from the old one.
-        if (account.email === undefined && account.workspaceId === undefined) return account;
-        const last = before.accounts.find(
-          (candidate) =>
-            candidate.id === account.id &&
-            candidate.driver === account.driver &&
-            // Fingerprinted Antigravity readings omit the listed identity, so they are never lent.
-            candidate.usageLimits.credentialFingerprint === undefined &&
-            candidate.email === account.email &&
-            candidate.workspaceId === account.workspaceId,
-        );
-        if (!last || last.usageLimits.unavailable) return account;
-        // Only the reading is lent; an unread model list stays unknown.
-        return { ...last, models: account.models };
-      }),
-    };
-  });
-}
-
 function missingManagementKey(config: UsageLimitSourceConfig): string {
   return typeof config.managementKey === "string"
     ? "No management key configured."
@@ -141,6 +104,7 @@ export const make = Effect.gen(function* () {
     return settingsSecretLiteral(resolved.managementKey);
   });
   const stateRef = yield* Ref.make<ReadonlyArray<UsageLimitSourceSnapshot>>([]);
+  const readConfigurations = new Map<string, string>();
   const changes = yield* Effect.acquireRelease(
     PubSub.unbounded<ReadonlyArray<UsageLimitSourceSnapshot>>(),
     PubSub.shutdown,
@@ -214,56 +178,62 @@ export const make = Effect.gen(function* () {
     if (changed) yield* PubSub.publish(changes, next);
   });
 
-  // Serialize refreshes so slow old-settings reads cannot resurrect removed sources after newer refreshes.
+  const isSelected = (config: UsageLimitSourceConfig | undefined) =>
+    config?.enabled === true && config.accountUsageEnabled === true;
+  const discardUnselected = Effect.fn("UsageLimitSources.discardUnselected")(function* (
+    settings: ServerSettings | null,
+  ) {
+    const previous = yield* Ref.get(stateRef);
+    yield* publish(previous.filter((source) => {
+      const config = settings?.usageLimitSources[source.id];
+      const keep = isSelected(config) && readConfigurations.get(source.id) === JSON.stringify(config);
+      if (!keep) readConfigurations.delete(source.id);
+      return keep;
+    }));
+  });
+
   const refreshLock = yield* Semaphore.make(1);
   const refresh = Effect.gen(function* () {
     const settings = yield* settingsService.getSettings.pipe(
       Effect.orElseSucceed((): ServerSettings | null => null),
     );
+    yield* discardUnselected(settings);
     const entries = Object.entries(settings?.usageLimitSources ?? {}).filter(
-      ([, config]) => config.enabled,
+      ([, config]) => isSelected(config),
     );
     const snapshots = yield* Effect.forEach(
       entries,
       ([id, config]) => readSource(id as UsageLimitSourceId, config),
       { concurrency: 4 },
     );
-    yield* publish(keepLastGoodReadings(yield* Ref.get(stateRef), snapshots));
+    yield* settingsService.withSettingsSnapshot((current) => Effect.suspend(() => {
+      const next = snapshots.filter((source) => {
+        const config = current.usageLimitSources[source.id];
+        const requested = settings?.usageLimitSources[source.id];
+        if (!isSelected(config) || JSON.stringify(config) !== JSON.stringify(requested)) return false;
+        readConfigurations.set(source.id, JSON.stringify(config));
+        return true;
+      });
+      for (const id of readConfigurations.keys()) {
+        if (!next.some((source) => source.id === id)) readConfigurations.delete(id);
+      }
+      return publish(next);
+    }));
   }).pipe(refreshLock.withPermits(1), Effect.ignoreCause({ log: true }));
 
-  // Shares the refresh lock so a stale in-flight read cannot overwrite a redemption.
-  const consumeResetCredit = Effect.fn("UsageLimitSources.consumeResetCredit")(function* (
-    input: UsageLimitSourceConsumeResetCreditInput,
-  ) {
-    const settings = yield* settingsService.getSettings.pipe(
-      Effect.mapError(() => new UsageLimitSourceError({ detail: "Could not read hub settings." })),
-    );
-    const config = settings.usageLimitSources[input.sourceId];
-    if (!config?.enabled || config.kind !== "cliproxy") {
-      return yield* new UsageLimitSourceError({
-        detail: "The usage limit source is missing or disabled.",
-      });
-    }
-    const managementKey = yield* readManagementKey(config);
-    if (managementKey.length === 0) {
-      return yield* new UsageLimitSourceError({ detail: missingManagementKey(config) });
-    }
-    const result = yield* api.consume(
-      { url: config.url, managementKey },
-      input.accountId,
-      input.creditId,
-    );
-    // A redemption changes the reading, so a refused re-read must not bring back the one before it.
-    const snapshot = yield* readSource(input.sourceId, config);
-    const previous = yield* Ref.get(stateRef);
-    yield* publish(previous.map((source) => (source.id === input.sourceId ? snapshot : source)));
-    return result;
-  }, refreshLock.withPermits(1));
+  const consumeResetCredit = (_input: UsageLimitSourceConsumeResetCreditInput) =>
+    Effect.fail(new UsageLimitSourceError({
+      detail: "Reset credits are unavailable through CLIProxyAPI. Use the provider's native client.",
+    }));
 
   yield* settingsService.streamChanges.pipe(
-    Stream.map((settings) => settings.usageLimitSources),
+    Stream.map((settings) => JSON.stringify(settings.usageLimitSources)),
     Stream.changes,
-    Stream.runForEach(() => refresh),
+    Stream.runForEach(() => settingsService.getSettings.pipe(
+      Effect.orElseSucceed((): ServerSettings | null => null),
+      Effect.flatMap(discardUnselected),
+      Effect.andThen(refresh),
+    )),
     Effect.forkScoped,
   );
 

@@ -957,6 +957,7 @@ export const UsageLimitSourceConfig = Schema.Struct({
     secretSetting,
   ),
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  accountUsageEnabled: Schema.optionalKey(Schema.Boolean),
 });
 export type UsageLimitSourceConfig = typeof UsageLimitSourceConfig.Type;
 
@@ -1679,6 +1680,14 @@ export const resolveProviderInstanceEnabled = (
     return false;
   }
   return instance.enabled ?? configEnabled ?? defaultEnabledForDriver(instance.driver);
+};
+
+export const isProviderAccountUsageEnabled = (
+  settings: Pick<ServerSettings, "providerInstances">,
+  instanceId: ProviderInstanceId,
+): boolean => {
+  const instance = settings.providerInstances[instanceId];
+  return instance !== undefined && instance.accountUsageEnabled === true && resolveProviderInstanceEnabled(instance);
 };
 
 export const resolveProjectProviderInstanceEnabled = (

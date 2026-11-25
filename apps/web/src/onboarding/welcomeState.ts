@@ -6,10 +6,10 @@ import * as Schema from "effect/Schema";
  * visit to Settings or an app restart during setup keeps them.
  */
 export const WelcomeImportSelection = Schema.Struct({
-  // Projects listed when the selection changed; projects found later get the defaults.
+  // Retained so previously stored project choices keep their original shape.
   knownKeys: Schema.Array(Schema.String),
   keys: Schema.Array(Schema.String),
-  // Unchecking the main box also leaves out projects found later, until it is checked again.
+  // Unchecking the main box leaves the import disabled on a later visit.
   optedOut: Schema.Boolean,
 });
 export type WelcomeImportSelection = typeof WelcomeImportSelection.Type;

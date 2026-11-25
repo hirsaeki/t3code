@@ -1391,6 +1391,39 @@ export function ProviderInstanceCard({
         />
       </SettingsSection>
 
+      {projectOverride === undefined ? (
+        <SettingsSection title={gt("Usage")}>
+          <SettingsRow
+            title={gt("External usage history")}
+            description={gt(
+              "Allow usage reports to read this instance's existing local agent history. Turning this off clears its cached usage; original histories and T3 conversations are kept.",
+            )}
+            control={
+              <Switch
+                aria-label={gt("External usage history")}
+                checked={instance.usageHistoryEnabled === true}
+                disabled={readOnly || isUpdating || (!enabled && instance.usageHistoryEnabled !== true)}
+                onCheckedChange={(value) => onUpdate({ ...instance, usageHistoryEnabled: value })}
+              />
+            }
+          />
+          <SettingsRow
+            title={gt("Account-wide usage")}
+            description={gt(
+              "Allow supported account-wide usage requests for this instance. Turning this off clears its cached account usage.",
+            )}
+            control={
+              <Switch
+                aria-label={gt("Account-wide usage")}
+                checked={instance.accountUsageEnabled === true}
+                disabled={readOnly || isUpdating || (!enabled && instance.accountUsageEnabled !== true)}
+                onCheckedChange={(value) => onUpdate({ ...instance, accountUsageEnabled: value })}
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
       {setup || environmentFields.length > 0 ? (
         <SettingsSection title={gt("Setup")}>
           {setup}

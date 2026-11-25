@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
@@ -76,11 +77,22 @@ const openCode2Runtime = {
   connectToOpenCodeServer: () => reachedServer("connect"),
 } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"];
 
+const optedInSettings = (instanceId: string) => ({
+  ...DEFAULT_SERVER_SETTINGS,
+  providerInstances: {
+    [ProviderInstanceId.make(instanceId)]: {
+      driver: ProviderDriverKind.make("opencode"),
+      enabled: true,
+      accountUsageEnabled: true,
+    },
+  },
+});
+
 const layer = Layer.mergeAll(
   IdAllocator.layer,
   McpProviderSessions.layer,
   ProviderLatestVersions.layer,
-  TestProviderHost.layer(),
+  TestProviderHost.layer({ settings: optedInSettings("opencode-test") }),
   Layer.succeed(
     ProviderEventLoggers.ProviderEventLoggers,
     ProviderEventLoggers.NoOpProviderEventLoggers,
@@ -1028,6 +1040,31 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
   );
 
   it.effect.each([
+    { enabled: true, accountUsageEnabled: undefined },
+    { enabled: true, accountUsageEnabled: false },
+    { enabled: false, accountUsageEnabled: true },
+  ])("does not request account usage before opt-in or while disabled: %j", (flags) =>
+    Effect.gen(function* () {
+      const requested: string[] = [];
+      const replay = replayOpenCodeServer(OPENCODE_2_RESPONSES, "secret", requested);
+      const instance = yield* create({ serverUrl: "https://remote.example", serverPassword: "secret" }, replay, flags.enabled).pipe(
+        Effect.provide(TestProviderHost.layer({ settings: {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: { [ProviderInstanceId.make("opencode-test")]: {
+            driver: ProviderDriverKind.make("opencode"), ...flags,
+          } },
+        } })),
+      );
+      yield* instance.snapshot.streamChanges.pipe(Stream.take(1), Stream.runDrain);
+      yield* instance.snapshot.refresh;
+      yield* instance.snapshot.refreshUsage!;
+      yield* TestClock.adjust("10 minutes");
+      assert.isUndefined((yield* instance.snapshot.getSnapshot).usageLimits);
+      assert.deepStrictEqual(requested.filter((url) => url.includes("usage/limits") || url.includes("go/v1/usage")), []);
+    }),
+  );
+
+  it.effect.each([
     { status: 200, data: null, reason: "unsupported" },
     { status: 404, data: null, reason: "unsupported" },
     { status: 503, data: null, reason: "probeFailed" },
@@ -1209,14 +1246,14 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
             runBackgroundWork: scenario.demand,
             settings: scenario.intervalOff
               ? {
-                  ...DEFAULT_SERVER_SETTINGS,
+                  ...optedInSettings("opencode-usage-recovery"),
                   backgroundActivity: {
                     ...DEFAULT_SERVER_SETTINGS.backgroundActivity,
                     profile: "custom",
                     overrides: { providerHealthRefreshInterval: Duration.zero },
                   },
                 }
-              : DEFAULT_SERVER_SETTINGS,
+              : optedInSettings("opencode-usage-recovery"),
           }),
         ),
         Effect.provideService(HttpClient.HttpClient, server),
@@ -1334,7 +1371,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         enabled: true,
         config: OpenCodeDriver.defaultConfig(),
       }).pipe(
-        Effect.provide(TestProviderHost.layer()),
+        Effect.provide(TestProviderHost.layer({ settings: optedInSettings("opencode-go-key-only") })),
         Effect.provideService(HttpClient.HttpClient, server),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
       );

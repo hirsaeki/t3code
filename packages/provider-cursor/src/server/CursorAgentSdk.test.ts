@@ -355,114 +355,35 @@ describe("CursorAgentSdkRunner", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
-  it.effect("reports the SDK's startup phases only to the send that is starting", () =>
+  it.effect("creates and reopens conversations through the unmodified public SDK", () =>
     Effect.gen(function* () {
-      const publish = (phase: string) =>
-        (Reflect.get(globalThis, Symbol.for("@cursor/sdk.startupPhase")) as Function)(phase);
-      const startSend = cursorSdkMock.send.getMockImplementation()!;
-      cursorSdkMock.send.mockImplementationOnce(async (message, options) => {
-        await Promise.resolve();
-        publish("plugins");
-        return startSend(message, options);
-      });
-      const phases: Array<string> = [];
-      const reported = yield* Deferred.make<void>();
+      cursorSdkMock.setStoredRuns([]);
       const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
-      const session = yield* runner.open({
-        operation: "create",
-        options: {},
-        threadId: ThreadId.make("thread-cursor-agent-sdk-phase"),
-        providerSessionId: ProviderSessionId.make("provider-session-cursor-agent-sdk-phase"),
-      });
-      const run = yield* session.send({
-        message: "start",
-        onStartupPhase: (phase) =>
-          Effect.sync(() => phases.push(phase)).pipe(
-            Effect.andThen(Deferred.succeed(reported, undefined)),
-          ),
-      });
-      yield* Deferred.await(reported);
-      publish("mcp");
-      yield* run.wait;
-
-      assert.deepStrictEqual(phases, ["plugins"]);
-    }).pipe(Effect.provide(layerTest)),
-  );
-
-  it.effect("keeps an agent's background shells and reports each start and end in order", () =>
-    Effect.gen(function* () {
-      const start = (conversationId: string, id: number) => {
-        let complete: (completion: object) => void = () => {};
-        const abort = vi.fn();
-        const kept: unknown = (
-          Reflect.get(globalThis, Symbol.for("@cursor/sdk.backgroundShell")) as Function
-        )({
-          conversationId,
-          command: "sleep 60",
-          shell: {
-            id,
-            pid: id + 1,
-            abort,
-            onComplete: (listener: typeof complete) => (complete = listener),
-          },
-        });
-        return { kept, abort, complete: (completion: object) => complete(completion) };
+      const options = {};
+      const input = {
+        options,
+        threadId: ThreadId.make("thread-cursor-agent-sdk-public"),
+        providerSessionId: ProviderSessionId.make("provider-session-cursor-agent-sdk-public"),
       };
-      const events: Array<object> = [];
-      const stops: Array<() => void> = [];
-      const reported = yield* Deferred.make<void>();
-      const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
-      const session = yield* runner.open({
-        operation: "create",
-        options: {},
-        threadId: ThreadId.make("thread-cursor-agent-sdk-background"),
-        providerSessionId: ProviderSessionId.make("provider-session-cursor-agent-sdk-background"),
-      });
-      const run = yield* session.send({
-        message: "watch it",
-        onBackgroundShell: (event) =>
-          Effect.gen(function* () {
-            if (event.type === "started") {
-              const { stop, ...started } = event;
-              stops.push(stop);
-              events.push(started);
-              return;
-            }
-            events.push(event);
-            if (!event.stopped) yield* Deferred.succeed(reported, undefined);
-          }),
-      });
-      yield* run.wait;
+      const created = yield* runner.open({ ...input, operation: "create" });
+      const first = yield* created.send({ message: "first request" });
+      yield* first.wait;
+      yield* created.close;
 
-      const killed = start("agent-cursor-agent-sdk-test", 10);
-      const finished = start("agent-cursor-agent-sdk-test", 20);
-      const foreign = start("agent-someone-else", 30);
-      killed.complete({ code: null, aborted: true });
-      finished.complete({ code: 3, aborted: false, outputPath: "/terminals/20.txt" });
-      yield* Deferred.await(reported);
-      stops[0]!();
+      const resumed = yield* runner.open({
+        ...input,
+        operation: "resume",
+        agentId: created.agentId,
+      });
+      const followUp = yield* resumed.send({ message: "follow-up request" });
+      yield* followUp.wait;
+      yield* resumed.close;
 
-      assert.deepStrictEqual([killed.kept, finished.kept, foreign.kept], [true, true, false]);
-      assert.strictEqual(killed.abort.mock.calls.length, 1);
-      const shell = (id: string, pid: number) => ({ id, pid, command: "sleep 60" });
-      assert.deepStrictEqual(events, [
-        { ...shell("10", 11), type: "started" },
-        { ...shell("20", 21), type: "started" },
-        {
-          ...shell("10", 11),
-          type: "ended",
-          stopped: true,
-          exitCode: undefined,
-          outputPath: undefined,
-        },
-        {
-          ...shell("20", 21),
-          type: "ended",
-          stopped: false,
-          exitCode: 3,
-          outputPath: "/terminals/20.txt",
-        },
-      ]);
+      // The SDK handle has send/close but no patched instance resume method.
+      assert.deepStrictEqual(cursorSdkMock.resume.mock.calls.at(-1), [created.agentId, options]);
+      assert.strictEqual(cursorSdkMock.send.mock.calls.at(-1)?.[0], "follow-up request");
+      assert.isUndefined(Reflect.get(globalThis, Symbol.for("@cursor/sdk.startupPhase")));
+      assert.isUndefined(Reflect.get(globalThis, Symbol.for("@cursor/sdk.backgroundShell")));
     }).pipe(Effect.provide(layerTest)),
   );
 

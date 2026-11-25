@@ -96,6 +96,8 @@ export function resolveNewThreadModelSelection(input: {
   if (
     !provider ||
     !window ||
+    // A quota fallback may change the model, never the account selected for the thread.
+    input.fallbackSelection.instanceId !== selection.instanceId ||
     !fallback?.enabled ||
     !fallback.installed ||
     fallback.auth.status === "unauthenticated" ||
@@ -342,18 +344,8 @@ export function collectHttpQuotaSources(presentations: Parameters<typeof collect
 export function collectLimitAccounts(presentations: LimitPresentations): readonly LimitAccount[] {
   const accounts = new Map<string, LimitAccount>();
   const creditSources = new Map<string, LimitAccount>();
-  const hubRedeems = new Map<string, LimitAccount>();
   const planSources = new Map<string, LimitAccount>();
   const merge = (key: string, next: LimitAccount) => {
-    // Prefer hub redemption to clear its routing cooldown too; displayed balance still follows the freshest read.
-    const previousHub = hubRedeems.get(key);
-    if (
-      next.redeem &&
-      "sourceId" in next.redeem.input &&
-      (!previousHub || Date.parse(next.limits.checkedAt) > Date.parse(previousHub.limits.checkedAt))
-    ) {
-      hubRedeems.set(key, next);
-    }
     const previousCredit = creditSources.get(key);
     if (
       next.limits.resetCredits &&
@@ -401,9 +393,7 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
       accentColor: previous.accentColor ?? next.accentColor,
       environments,
       sourceLabel: environments.length > 0 ? null : (previous.sourceLabel ?? next.sourceLabel),
-      redeem:
-        hubRedeems.get(key)?.redeem ??
-        (creditSource ? creditSource.redeem : (winner.redeem ?? previous.redeem ?? next.redeem)),
+      redeem: creditSource ? creditSource.redeem : (winner.redeem ?? previous.redeem ?? next.redeem),
       limits: {
         ...winner.limits,
         ...(creditSource?.limits.resetCredits
@@ -426,8 +416,12 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
         accentColor: provider.accentColor,
         environments: [{ environmentId, label }],
         sourceLabel: null,
-        redeem: { environmentId, input: { instanceId: provider.instanceId } },
-        limits: provider.usageLimits,
+        redeem: provider.driver === "codex"
+          ? { environmentId, input: { instanceId: provider.instanceId } }
+          : null,
+        limits: provider.driver === "codex"
+          ? provider.usageLimits
+          : { ...provider.usageLimits, resetCredits: undefined },
       });
     }
   }
@@ -452,17 +446,8 @@ export function collectLimitAccounts(presentations: LimitPresentations): readonl
           accentColor: undefined,
           environments: [],
           sourceLabel,
-          redeem: account.usageLimits.resetCredits?.nextCreditId
-            ? {
-                environmentId,
-                input: {
-                  sourceId: source.id,
-                  accountId: account.id,
-                  creditId: account.usageLimits.resetCredits.nextCreditId,
-                },
-              }
-            : null,
-          limits: account.usageLimits,
+          redeem: null,
+          limits: { ...account.usageLimits, resetCredits: undefined },
         });
       }
     }
@@ -1031,7 +1016,7 @@ export function collectProviderUsageLimits(
         Date.parse(snapshot.limits.checkedAt) > Date.parse(previous.usage.limits.checkedAt));
     const previousCredit = previous?.credits;
     const credits =
-      snapshot.limits.resetCredits &&
+      provider.driver === "codex" && snapshot.limits.resetCredits &&
       (!previousCredit ||
         Date.parse(snapshot.limits.checkedAt) > Date.parse(previousCredit.limits.checkedAt))
         ? snapshot
@@ -1054,48 +1039,20 @@ export function collectProviderUsageLimits(
     usage: { provider, limits },
     credits,
   } of native) {
-    const key = resolveKey(nativeReport(provider));
-    // Only a hub this instance reaches may redeem a credit for its thread.
-    const hubCredits = shownHubs
-      .flatMap((source) => source.accounts.map((account) => ({ source, account })))
-      .filter(
-        ({ account }) =>
-          key !== null &&
-          resolveKey(account) === key &&
-          account.usageLimits.resetCredits &&
-          !limitsNotice(account.usageLimits),
-      )
-      .sort(
-        (a, b) =>
-          Date.parse(b.account.usageLimits.checkedAt) - Date.parse(a.account.usageLimits.checkedAt),
-      )[0];
-    const hubCreditId = hubCredits?.account.usageLimits.resetCredits?.nextCreditId;
-    const showHubCredits =
-      hubCredits &&
-      (!credits ||
-        Date.parse(hubCredits.account.usageLimits.checkedAt) >
-          Date.parse(credits.limits.checkedAt));
-    const shownCredits = showHubCredits
-      ? hubCredits.account.usageLimits.resetCredits
-      : credits?.limits.resetCredits;
+    const shownCredits = credits?.limits.resetCredits;
     accounts.push({
       id: provider.instanceId,
       driver: provider.driver,
       label: `${provider.displayName?.trim() || String(provider.driver)} [${provider.instanceId}]`,
       ...(provider.auth.label ? { plan: provider.auth.label } : {}),
       instanceId: provider.instanceId,
-      resetCreditInput:
-        hubCreditId && hubCredits
-          ? {
-              sourceId: hubCredits.source.id,
-              accountId: hubCredits.account.id,
-              creditId: hubCreditId,
-            }
-          : { instanceId: credits?.provider.instanceId ?? provider.instanceId },
+      ...(provider.driver === "codex"
+        ? { resetCreditInput: { instanceId: credits?.provider.instanceId ?? provider.instanceId } }
+        : {}),
       ...(provider.displayName ? { displayName: provider.displayName } : {}),
       ...(provider.accentColor ? { accentColor: provider.accentColor } : {}),
       ...(provider.auth.email ? { email: provider.auth.email } : {}),
-      limits: shownCredits ? { ...limits, resetCredits: shownCredits } : limits,
+      limits: { ...limits, resetCredits: shownCredits },
     });
   }
   for (const source of shownHubs) {
@@ -1108,18 +1065,9 @@ export function collectProviderUsageLimits(
         driver: account.driver,
         label: `${source.label} · ${hubAccountName(account)}`,
         sourceLabel: "CLI Proxy",
-        ...(account.usageLimits.resetCredits?.nextCreditId
-          ? {
-              resetCreditInput: {
-                sourceId: source.id,
-                accountId: account.id,
-                creditId: account.usageLimits.resetCredits.nextCreditId,
-              },
-            }
-          : {}),
         ...(account.plan ? { plan: account.plan } : {}),
         ...(account.email ? { email: account.email } : {}),
-        limits: account.usageLimits,
+        limits: { ...account.usageLimits, resetCredits: undefined },
       });
     }
     if (source.error && (matching.length > 0 || source.accounts.length === 0)) {

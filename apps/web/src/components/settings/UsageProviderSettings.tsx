@@ -14,6 +14,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
+import { Switch } from "../ui/switch";
 import { AddUsageLimitSourceDialog } from "./AddUsageLimitSourceDialog";
 import { useSearchableSetting } from "./settingsSearch";
 import { SettingsRow, SettingsSection } from "./settingsLayout";
@@ -68,16 +69,31 @@ export function UsageProviderSettings({
                 title={label}
                 description={
                   <span className="break-all">
-                    {source.enabled ? kindLabel : gt("{name} · Disabled", { name: kindLabel })}
+                    {source.enabled && source.accountUsageEnabled === true
+                      ? kindLabel
+                      : gt("{name} · Disabled", { name: kindLabel })}
                     {label !== source.url ? ` · ${source.url}` : ""}
                   </span>
                 }
                 control={
                   !readOnly ? (
-                    <RemoveUsageProviderButton
-                      label={label}
-                      onConfirm={() => updateSettings({ usageLimitSources: { [id]: null } })}
-                    />
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        aria-label={gt("Enable usage from {name}", { name: label })}
+                        checked={source.enabled && source.accountUsageEnabled === true}
+                        onCheckedChange={(value) =>
+                          updateSettings({
+                            usageLimitSources: {
+                              [id]: { ...source, enabled: value, accountUsageEnabled: value },
+                            },
+                          })
+                        }
+                      />
+                      <RemoveUsageProviderButton
+                        label={label}
+                        onConfirm={() => updateSettings({ usageLimitSources: { [id]: null } })}
+                      />
+                    </div>
                   ) : null
                 }
               />

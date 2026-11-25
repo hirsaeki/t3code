@@ -77,7 +77,8 @@ describe("new thread model fallback", () => {
     now,
   };
   it.each([
-    ["exhausted default", {}, fallback],
+    ["exhausted default does not rotate accounts", {}, selection],
+    ["explicit alternate account", { explicitSelection: fallback }, fallback],
     ["explicit selection", { explicitSelection: selection }, selection],
     ["missing default", { defaultSelection: null }, null],
     ["no fallback", { fallbackSelection: null }, selection],
@@ -185,30 +186,47 @@ describe("new thread model fallback", () => {
     "matches %s pools %s to %s",
     (driver, ids, model, usesFallback, modelIds, providerIds) => {
       const defaultSelection = { ...selection, model };
+      const selectedProvider = provider({
+        driver: ProviderDriverKind.make(driver),
+        usageLimits: {
+          checkedAt: limited.checkedAt,
+          windows: ids.map((id) => ({
+            ...window,
+            id,
+            usedPercent: 100,
+            ...(modelIds === undefined ? {} : { modelIds }),
+            ...(providerIds === undefined ? {} : { providerIds }),
+          })),
+        },
+      });
+      expect(exhaustedUsageWindow(selectedProvider, now, model) !== undefined).toBe(usesFallback);
       expect(
         resolveNewThreadModelSelection({
           ...defaults,
           defaultSelection,
-          providers: [
-            provider({
-              driver: ProviderDriverKind.make(driver),
-              usageLimits: {
-                checkedAt: limited.checkedAt,
-                windows: ids.map((id) => ({
-                  ...window,
-                  id,
-                  usedPercent: 100,
-                  ...(modelIds === undefined ? {} : { modelIds }),
-                  ...(providerIds === undefined ? {} : { providerIds }),
-                })),
-              },
-            }),
-            available,
-          ],
+          providers: [selectedProvider, available],
         }).selection,
-      ).toEqual(usesFallback ? fallback : defaultSelection);
+      ).toEqual(defaultSelection);
     },
   );
+
+  it("can use a configured model in the same account when only one model's budget is exhausted", () => {
+    const sameAccountFallback = { ...selection, model: "available-model" };
+    expect(
+      resolveNewThreadModelSelection({
+        ...defaults,
+        fallbackSelection: sameAccountFallback,
+        providers: [
+          provider({
+            usageLimits: {
+              checkedAt: limited.checkedAt,
+              windows: [{ ...window, usedPercent: 100, modelIds: [selection.model] }],
+            },
+          }),
+        ],
+      }).selection,
+    ).toEqual(sameAccountFallback);
+  });
 });
 
 describe("pace", () => {
@@ -443,8 +461,8 @@ describe("pools", () => {
 
   it("takes windows from a fresher hub read but credits and redeem from the native instance", () => {
     const native = provider({
-      driver: claude,
-      instanceId: ProviderInstanceId.make("claude"),
+      driver: ProviderDriverKind.make("codex"),
+      instanceId: ProviderInstanceId.make("codex"),
       auth: { status: "authenticated", email: "same@example.com" },
       usageLimits: {
         checkedAt,
@@ -464,8 +482,8 @@ describe("pools", () => {
                 ...source,
                 accounts: [
                   {
-                    id: "claude-same@example.com.json",
-                    driver: claude,
+                    id: "codex-same@example.com.json",
+                    driver: ProviderDriverKind.make("codex"),
                     email: "same@example.com",
                     usageLimits: {
                       checkedAt: "2026-09-03T11:30:00.000Z",
@@ -482,11 +500,11 @@ describe("pools", () => {
     const [account] = collectLimitAccounts(input);
     expect(account?.limits.windows[0]?.usedPercent).toBe(55);
     expect(account?.limits.resetCredits?.availableCount).toBe(2);
-    expect(account?.redeem).toEqual({ environmentId: "env-a", input: { instanceId: "claude" } });
+    expect(account?.redeem).toEqual({ environmentId: "env-a", input: { instanceId: "codex" } });
     expect(account?.environments).toEqual([{ environmentId: "env-a", label: "Laptop" }]);
   });
 
-  it("redeems through the hub when it holds a credit, even with a fresher native read", () => {
+  it("does not expose Claude or hub reset actions from old cached credits", () => {
     const native = provider({
       driver: claude,
       instanceId: ProviderInstanceId.make("claude"),
@@ -526,11 +544,8 @@ describe("pools", () => {
       ],
     ]);
     const [account] = collectLimitAccounts(input);
-    expect(account?.redeem).toEqual({
-      environmentId: "env-a",
-      input: { sourceId: "hub", accountId: "claude-same@example.com.json", creditId: "hub-credit" },
-    });
-    expect(account?.limits.resetCredits?.availableCount).toBe(3);
+    expect(account?.redeem).toBeNull();
+    expect(account?.limits.resetCredits).toBeUndefined();
   });
 
   it("redeems on the environment whose snapshot supplied the credits on show", () => {
@@ -562,7 +577,7 @@ describe("pools", () => {
     expect(account?.redeem).toEqual({ environmentId: "env-b", input: { instanceId: "codex" } });
   });
 
-  it("keeps distinct hub accounts redeemable through their own source", () => {
+  it("does not expose resets from cached hub accounts", () => {
     const hubAccounts = ["first", "second"].map((id) => ({
       id,
       driver: ProviderDriverKind.make("codex"),
@@ -585,12 +600,9 @@ describe("pools", () => {
         },
       ],
     ]);
-    expect(collectLimitAccounts(input).map((account) => account.redeem)).toEqual(
-      hubAccounts.map((account) => ({
-        environmentId: "env-a",
-        input: { sourceId: "hub", accountId: account.id, creditId: `${account.id}-credit` },
-      })),
-    );
+    const collected = collectLimitAccounts(input);
+    expect(collected.map((account) => account.redeem)).toEqual([null, null]);
+    expect(collected.every((account) => account.limits.resetCredits === undefined)).toBe(true);
   });
 
   it("does not give old credits the timestamp of a newer window-only read", () => {
@@ -1429,7 +1441,7 @@ describe("/usage-limits", () => {
     },
   ];
 
-  it("uses hub credit balances and redemption targets in the composer, including native duplicates", () => {
+  it("does not expose hub credit balances or redemption in the composer", () => {
     const hubs = sources.map((source) => ({
       ...source,
       accounts: source.accounts.map((account) => ({
@@ -1441,17 +1453,9 @@ describe("/usage-limits", () => {
       })),
     }));
     const report = collectProviderUsageLimits(selected.instanceId, [selected], hubs, now);
-    expect(report?.accounts[0]?.limits.resetCredits?.availableCount).toBe(2);
-    expect(report?.accounts[0]?.resetCreditInput).toEqual({
-      sourceId: "hub",
-      accountId: "duplicate",
-      creditId: "duplicate-credit",
-    });
-    expect(report?.accounts.find((account) => account.id === "hub:oss")?.resetCreditInput).toEqual({
-      sourceId: "hub",
-      accountId: "oss",
-      creditId: "oss-credit",
-    });
+    expect(report?.accounts[0]?.limits.resetCredits).toBeUndefined();
+    expect(report?.accounts[0]?.resetCreditInput).toEqual({ instanceId: selected.instanceId });
+    expect(report?.accounts.find((account) => account.id === "hub:oss")?.resetCreditInput).toBeUndefined();
   });
 
   it("gives a hub credit to no native row when its email is signed in to two workspaces", () => {
@@ -1479,11 +1483,11 @@ describe("/usage-limits", () => {
     expect(report?.accounts.map((account) => account.resetCreditInput)).toEqual([
       { instanceId: "ws-a" },
       { instanceId: "ws-b" },
-      { sourceId: "hub", accountId: "duplicate", creditId: "c" },
+      undefined,
     ]);
   });
 
-  it("redeems a native duplicate through the hub even when the native snapshot is fresher", () => {
+  it("keeps supported native reset credits without routing through the hub", () => {
     const fresher = provider({
       usageLimits: {
         checkedAt: "2026-09-03T11:30:00.000Z",
@@ -1512,11 +1516,7 @@ describe("/usage-limits", () => {
       },
     ];
     const report = collectProviderUsageLimits(fresher.instanceId, [fresher], stale, now);
-    expect(report?.accounts[0]?.resetCreditInput).toEqual({
-      sourceId: "hub",
-      accountId: "duplicate",
-      creditId: "hub-credit",
-    });
+    expect(report?.accounts[0]?.resetCreditInput).toEqual({ instanceId: fresher.instanceId });
     expect(report?.accounts[0]?.limits.resetCredits?.availableCount).toBe(3);
   });
 

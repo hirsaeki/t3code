@@ -136,9 +136,29 @@ export const writeProviderStatusCache = (input: {
   readonly filePath: string;
   readonly provider: ServerProvider;
 }) => {
-  const { updateState: _updateState, ...cacheableProvider } = input.provider;
+  const { updateState: _updateState, usageLimits: _usageLimits, ...cacheableProvider } = input.provider;
   return writeFileStringAtomically({
     filePath: input.filePath,
     contents: `${JSON.stringify(cacheableProvider, null, 2)}\n`,
   });
 };
+
+/** Quotas were never hydrated from status caches; clear legacy copies, including removed instances. */
+export const clearCachedProviderUsage = Effect.fn("providerStatusCache.clearCachedProviderUsage")(
+  function* (cacheDir: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const names = yield* fs.readDirectory(cacheDir).pipe(Effect.orElseSucceed(() => []));
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const filePath = path.join(cacheDir, name);
+      yield* fs.readFileString(filePath).pipe(
+        Effect.flatMap(decodeProviderStatusCache),
+        Effect.flatMap((provider) => provider.usageLimits === undefined
+          ? Effect.void
+          : writeProviderStatusCache({ filePath, provider })),
+        Effect.ignore,
+      );
+    }
+  },
+);

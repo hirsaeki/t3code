@@ -70,6 +70,8 @@ function withFakeClaudeEnv<A, E, R>(
     configDirMustBe?: string;
     cwdMustNotBe?: string;
     settingsLog?: string;
+    settingsPathLog?: string;
+    settingsMustContain?: string;
     claudeConfig?: Partial<ClaudeSettings>;
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
@@ -95,6 +97,8 @@ function withFakeClaudeEnv<A, E, R>(
       T3_FAKE_CLAUDE_IMAGE_ATTEMPT_LOG: input.imageAttemptLog,
       T3_FAKE_CLAUDE_CWD_MUST_NOT_BE: input.cwdMustNotBe,
       T3_FAKE_CLAUDE_SETTINGS_LOG: input.settingsLog,
+      T3_FAKE_CLAUDE_SETTINGS_PATH_LOG: input.settingsPathLog,
+      T3_FAKE_CLAUDE_SETTINGS_MUST_CONTAIN: input.settingsMustContain,
       T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE: input.configDirMustBe,
     };
     const environment: NodeJS.ProcessEnv = {
@@ -225,7 +229,8 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
               body: "Body",
             },
           }),
-          argsMustContain: `--model ${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded] --effort max --settings {"disableAllHooks":true,"fastMode":true}`,
+          argsMustContain: `--model ${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded] --effort max --settings`,
+          settingsMustContain: `"fastMode":true`,
           claudeConfig: { customModels: [SYNTHETIC_CLAUDE_COLLIDING_ALIAS] },
         },
         (textGeneration) =>
@@ -436,33 +441,54 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     }),
   );
 
-  it.effect("passes --settings from the instance launch args to Claude text generation", () =>
-    withFakeClaudeEnv(
-      {
-        output: JSON.stringify({
-          structured_output: {
-            title: "Use instance settings",
-          },
-        }),
-        argsMustContain: `"env":{"ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-a"}`,
-        claudeConfig: {
-          launchArgs: `--settings '{"env":{"ANTHROPIC_VERTEX_PROJECT_ID":"vertex-project-a"}}'`,
-        },
-      },
-      (textGeneration) =>
-        Effect.gen(function* () {
-          const generated = yield* textGeneration.generateThreadTitle({
-            cwd: process.cwd(),
-            message: "thread title",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("claudeAgent"),
-              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+  it.effect.each([0, 1])(
+    "keeps launch settings private and removes them after Claude exits with %s",
+    (exitCode) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped();
+        const settingsLog = path.join(root, "settings.json");
+        const settingsPathLog = path.join(root, "settings-path.txt");
+        const canary = "test-only-claude-helper-secret";
+        yield* withFakeClaudeEnv(
+          {
+            output: JSON.stringify({ structured_output: { title: "Use instance settings" } }),
+            exitCode,
+            ...(exitCode === 0 ? {} : { stderr: "fixture request failed" }),
+            argsMustNotContain: canary,
+            settingsLog,
+            settingsPathLog,
+            claudeConfig: {
+              launchArgs: `--settings '{"env":{"ANTHROPIC_AUTH_TOKEN":"${canary}"}}'`,
             },
-          });
-
-          expect(generated.title).toBe(sanitizeThreadTitle("Use instance settings"));
-        }),
-    ),
+          },
+          (textGeneration) =>
+            Effect.gen(function* () {
+              const generate = textGeneration.generateThreadTitle({
+                cwd: process.cwd(),
+                message: "thread title",
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("claudeAgent"),
+                  model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                },
+              });
+              if (exitCode === 0) {
+                expect((yield* generate).title).toBe("Use instance settings");
+              } else {
+                const error = yield* generate.pipe(Effect.flip);
+                expect(error.detail).toContain("fixture request failed");
+                expect(error.detail).not.toContain(canary);
+              }
+            }),
+        );
+        expect(JSON.parse(yield* fs.readFileString(settingsLog))).toEqual({
+          env: { ANTHROPIC_AUTH_TOKEN: canary },
+          disableAllHooks: true,
+        });
+        const settingsPath = yield* fs.readFileString(settingsPathLog);
+        expect(yield* fs.exists(path.dirname(settingsPath))).toBe(false);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("retries without --no-session-persistence when the Claude CLI rejects it", () =>

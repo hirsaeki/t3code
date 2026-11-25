@@ -1,6 +1,6 @@
 # Cursor
 
-Cursor V2 runs through the official [`@cursor/sdk`](https://cursor.com/docs/api/sdk/typescript)
+Cursor V2 runs through the unmodified official [`@cursor/sdk`](https://cursor.com/docs/sdk/typescript)
 TypeScript package. It does not use Cursor's ACP transport for V2 execution.
 
 ## Prerequisites
@@ -56,8 +56,11 @@ The adapter supports:
 - Cursor `task` subagents, projected as read-only child app threads with their tool activity and
   final result.
 
-The public SDK does not currently expose native agent fork or interactive approval callbacks. A
-text-only steer reaches the current run without restarting it.
+The public SDK does not currently expose native agent fork, message-free turn resume, background
+shell lifecycle callbacks, or interactive approval callbacks. Existing threads can be reopened and
+receive new messages. After stopping a turn, send a new message to continue; T3 Code does not send an
+automatic continuation prompt. Background shell waiting and detailed SDK startup phases are
+unavailable. A text-only steer reaches the current run without restarting it.
 When Cursor cannot deliver the steer, the same message is queued for the next turn after
 this run finishes. If you press Stop, that follow-up stays held until you resume the queue. Steers
 with attachments and provider or runtime changes that must apply immediately interrupt and restart
@@ -85,6 +88,13 @@ there. Restricted modes without Auto-review, including the default Auto-accept e
 request the sandbox and cannot start on Windows. Explicit sandbox policies remain authoritative,
 including restrictive policies that the Windows SDK rejects. Explicit approval policy overrides
 control Auto-review, which is not represented as an interactive T3 Code approval flow.
+
+If the SDK rejects a newly available model after the environment has already used Cursor, restart
+the environment's T3 Code server to clear the SDK's in-process model cache, then select the model
+again. T3 Code does not modify the SDK's model discovery behavior.
+
+The SDK is supplied by Anysphere and remains subject to [Cursor's terms](https://cursor.com/terms-of-service).
+T3 Code's MIT license applies to T3 Code's own source; it does not relicense the Cursor SDK.
 
 The existing Cursor binary path and API endpoint settings belong to the CLI/ACP integration. Cursor
 V2 execution does not launch that binary, and the SDK does not expose an API endpoint override.

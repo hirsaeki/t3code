@@ -1062,7 +1062,7 @@ it.effect("a retried worktree launch replays after its base ref is gone", () =>
   }),
 );
 
-it.effect("a client launches with the fallback for an exhausted default", () =>
+it.effect("a client keeps the selected account when its default is exhausted", () =>
   Effect.gen(function* () {
     const launched: ThreadLaunch.ThreadLaunchInput[] = [];
     const fallbackModel = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
@@ -1087,7 +1087,7 @@ it.effect("a client launches with the fallback for an exhausted default", () =>
           }
         : {}),
     }));
-    const { projectId, dependencies } = clientLaunchHarness({
+    const { projectId, modelSelection, dependencies } = clientLaunchHarness({
       runtimeModeCeiling: "full-access",
       launched,
       fallbackModel,
@@ -1105,9 +1105,9 @@ it.effect("a client launches with the fallback for an exhausted default", () =>
       })
       .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
     expect(result.at(-1)?.result).toMatchObject({
-      modelSelection: fallbackModel,
+      modelSelection,
     });
-    expect(launched[0]?.modelSelection).toEqual(fallbackModel);
+    expect(launched[0]?.modelSelection).toEqual(modelSelection);
   }),
 );
 

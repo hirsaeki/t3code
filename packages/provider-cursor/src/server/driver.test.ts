@@ -33,6 +33,7 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import { CursorDriver } from "./driver.ts";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
+import * as CursorUsageAccounts from "./CursorUsageAccounts.ts";
 import * as CursorSdk from "./CursorSdk.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -42,6 +43,11 @@ import { loadCursorSdk } from "./sdk.ts";
 const { Cursor } = loadCursorSdk();
 
 const layerTest = TestProviderHost.layer({ runBackgroundWork: false }).pipe(
+  Layer.provideMerge(Layer.succeed(CursorUsageAccounts.CursorUsageAccounts, {
+    scan: () => Effect.succeed([]),
+    awaitPersisted: Effect.void,
+    invalidate: () => Effect.void,
+  })),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   Layer.provideMerge(IdAllocator.layer),
   Layer.provideMerge(McpProviderSessions.layer),

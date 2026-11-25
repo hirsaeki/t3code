@@ -40,6 +40,7 @@ import { readClaudeUserSettings } from "../provider/Drivers/ClaudeSkills.ts";
 import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
+import { makePrivateFiles } from "../auth/privateFile.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
@@ -137,6 +138,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig.ServerConfig;
+  const { restrictPrivatePath, writePrivateFile } = yield* makePrivateFiles();
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
   const scopedModelCatalog = modelCatalog.pipe(
     Effect.map((catalog) => scopeClaudeModelCatalog(catalog, claudeSettings.customModels)),
@@ -297,16 +299,19 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       "Failed to encode Claude CLI settings.",
     );
     // The user's settings can hold credentials; a file keeps them out of the process list.
-    const settingsArgument = investigate
-      ? yield* fileSystem
-          .makeTempFileScoped({ prefix: "t3code-claude-settings-", suffix: ".json" })
-          .pipe(
-            Effect.tap((filePath) => fileSystem.writeFileString(filePath, settingsJson)),
-            Effect.mapError((cause) =>
-              normalizeCliError("claude", operation, cause, "Failed to write Claude CLI settings"),
-            ),
-          )
-      : settingsJson;
+    const settingsArgument = yield* Effect.gen(function* () {
+      const directory = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3code-claude-settings-",
+      });
+      yield* restrictPrivatePath(directory, "directory");
+      const filePath = path.join(directory, "settings.json");
+      yield* writePrivateFile(filePath, new TextEncoder().encode(settingsJson));
+      return filePath;
+    }).pipe(
+      Effect.mapError((cause) =>
+        normalizeCliError("claude", operation, cause, "Failed to write Claude CLI settings"),
+      ),
+    );
 
     // `claude -p` accepts images only as content blocks of a stream-json user message.
     const apiModelId = resolveClaudeCatalogApiModelId(catalog, resolvedModelSelection);

@@ -9,7 +9,6 @@ import type {
   SendOptions,
   SteerAckOutcome,
 } from "@cursor/sdk";
-import * as NodeAsyncHooks from "node:async_hooks";
 import {
   NonNegativeInt,
   type OrchestrationV2ProviderSession,
@@ -100,34 +99,7 @@ export interface CursorAgentSdkSendInput<Error> {
   readonly onDelta?: (update: InteractionUpdate) => Effect.Effect<void, Error>;
   /** Runs `agent.summarize()` instead, which takes no message or options. */
   readonly summarize?: boolean;
-  /** Runs `agent.resume()`: Cursor's ResumeAction from the latest checkpoint, with no message. */
-  readonly resume?: boolean;
-  /**
-   * Runs, in order, when a background shell this agent starts from now on starts and when it
-   * ends, which is often long after the run.
-   */
-  readonly onBackgroundShell?: (event: CursorBackgroundShellEvent) => Effect.Effect<void>;
-  /** Runs as the SDK enters each slow step of preparing the run, before the run starts. */
-  readonly onStartupPhase?: (phase: string) => Effect.Effect<void>;
 }
-
-interface CursorBackgroundShellRef {
-  /** The shell id Cursor gave the agent. */
-  readonly id: string;
-  readonly pid: number | undefined;
-  readonly command: string;
-}
-
-export type CursorBackgroundShellEvent =
-  | (CursorBackgroundShellRef & { readonly type: "started"; readonly stop: () => void })
-  | (CursorBackgroundShellRef & {
-      readonly type: "ended";
-      /** Killed by the agent or by `stop`, rather than exiting by itself. */
-      readonly stopped: boolean;
-      readonly exitCode: number | undefined;
-      /** The file Cursor logs the shell's output to. */
-      readonly outputPath: string | undefined;
-    });
 
 export interface CursorAgentSdkRun {
   readonly runId: string;
@@ -253,14 +225,6 @@ export type CursorAgentSdkProtocolLogEvent =
       readonly payload: {
         readonly type: "run.start";
         readonly message: string | SDKUserMessage;
-        readonly options: CursorAgentSdkLoggedSendOptions;
-      };
-    }
-  | {
-      readonly direction: "outgoing";
-      readonly stage: "decoded";
-      readonly payload: {
-        readonly type: "run.resume";
         readonly options: CursorAgentSdkLoggedSendOptions;
       };
     }
@@ -476,70 +440,6 @@ function isDisposableCursorLocalStore(value: unknown): value is DisposableCursor
   );
 }
 
-interface CursorBackgroundShell {
-  readonly conversationId?: unknown;
-  readonly command?: unknown;
-  readonly shell: {
-    readonly id?: unknown;
-    readonly pid?: unknown;
-    readonly abort: () => void;
-    readonly onComplete: (
-      listener: (completion: {
-        readonly code?: unknown;
-        readonly aborted?: unknown;
-        readonly outputPath?: unknown;
-      }) => void,
-    ) => void;
-  };
-}
-
-// The SDK names no step while it prepares a run, which can take minutes, so the @cursor/sdk patch
-// calls this hook as it enters each one. The hook is global: async context finds the send.
-const STARTUP_PHASE_HOOK = Symbol.for("@cursor/sdk.startupPhase");
-const startupPhaseListener = new NodeAsyncHooks.AsyncLocalStorage<(phase: string) => void>();
-
-function listeningForStartupPhases<A>(listener: (phase: string) => void, start: () => A): A {
-  const hooks = globalThis as Record<symbol, unknown>;
-  hooks[STARTUP_PHASE_HOOK] ??= (phase: unknown) => {
-    if (typeof phase === "string") startupPhaseListener.getStore()?.(phase);
-  };
-  return startupPhaseListener.run(listener, start);
-}
-
-// The SDK kills an agent's background shells when its run ends and reports their exit to no one.
-// The @cursor/sdk patch offers each new one to this hook; true keeps it past the run.
-const BACKGROUND_SHELL_HOOK = Symbol.for("@cursor/sdk.backgroundShell");
-const backgroundShellListeners = new Map<string, (event: CursorBackgroundShellEvent) => void>();
-
-function listenForBackgroundShells(
-  agentId: string,
-  listener: (event: CursorBackgroundShellEvent) => void,
-) {
-  const hooks = globalThis as Record<symbol, unknown>;
-  hooks[BACKGROUND_SHELL_HOOK] ??= ({ conversationId, command, shell }: CursorBackgroundShell) => {
-    const notify =
-      typeof conversationId === "string" ? backgroundShellListeners.get(conversationId) : undefined;
-    if (notify === undefined) return false;
-    const ref = {
-      id: String(shell.id),
-      pid: typeof shell.pid === "number" ? shell.pid : undefined,
-      command: typeof command === "string" ? command : "",
-    };
-    notify({ ...ref, type: "started", stop: () => shell.abort() });
-    shell.onComplete((completion) =>
-      notify({
-        ...ref,
-        type: "ended",
-        stopped: completion.aborted === true,
-        exitCode: typeof completion.code === "number" ? completion.code : undefined,
-        outputPath: typeof completion.outputPath === "string" ? completion.outputPath : undefined,
-      }),
-    );
-    return true;
-  };
-  backgroundShellListeners.set(agentId, listener);
-}
-
 export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(function* (
   protocolLoggerFor: (input: CursorAgentSdkOpenInput) => CursorAgentSdkProtocolLogger | undefined,
 ) {
@@ -716,7 +616,6 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
         });
         return { storePlatform: resolvedStorePlatform, agent: openedAgent };
       }).pipe(Effect.onExit((exit) => (Exit.isFailure(exit) ? disposeOwnedStore : Effect.void)));
-      let shellListener: ((event: CursorBackgroundShellEvent) => void) | undefined;
 
       const runOptions = {
         runtime: "local" as const,
@@ -736,28 +635,11 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
         send: Effect.fn("CursorAgentSdkSession.send")(function* (sendInput) {
           const context = yield* Effect.context();
           const options = loggedCursorSendOptions(sendInput.options);
-          yield* sendInput.resume === true
-            ? log({
-                direction: "outgoing",
-                stage: "decoded",
-                payload: { type: "run.resume", options },
-              })
-            : log({
-                direction: "outgoing",
-                stage: "decoded",
-                payload: { type: "run.start", message: sendInput.message, options },
-              });
-
-          const onBackgroundShell = sendInput.onBackgroundShell;
-          if (onBackgroundShell !== undefined) {
-            let delivered = Promise.resolve();
-            shellListener = (event) => {
-              delivered = delivered
-                .then(() => Effect.runPromiseWith(context)(onBackgroundShell(event)))
-                .catch(() => undefined);
-            };
-            listenForBackgroundShells(agent.agentId, shellListener);
-          }
+          yield* log({
+            direction: "outgoing",
+            stage: "decoded",
+            payload: { type: "run.start", message: sendInput.message, options },
+          });
 
           let callbacksReady = false;
           const pendingUpdates: Array<InteractionUpdate> = [];
@@ -800,23 +682,12 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
                 await dispatchUpdate(update);
               },
             };
-            if (sendInput.resume !== true) return agent.send(sendInput.message, options);
-            if (agent.resume === undefined) {
-              throw new Error("This Cursor SDK agent cannot resume.");
-            }
-            return agent.resume(options);
+            return agent.send(sendInput.message, options);
           };
-          const onStartupPhase = sendInput.onStartupPhase;
           const startRun = () =>
             Effect.tryPromise({
-              try: () =>
-                onStartupPhase === undefined
-                  ? startSdkRun()
-                  : listeningForStartupPhases((phase) => {
-                      void Effect.runPromiseWith(context)(onStartupPhase(phase));
-                    }, startSdkRun),
-              catch: (cause) =>
-                runnerError(cause, sendInput.resume === true ? "run.resume" : "run.start"),
+              try: startSdkRun,
+              catch: (cause) => runnerError(cause, "run.start"),
             });
           const run = yield* startRun().pipe(
             Effect.catchIf(
@@ -1098,13 +969,7 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
         }).pipe(
           Effect.andThen(
             Effect.try({
-              try: () => {
-                // A resumed session may already listen for this agent.
-                if (backgroundShellListeners.get(agent.agentId) === shellListener) {
-                  backgroundShellListeners.delete(agent.agentId);
-                }
-                agent.close();
-              },
+              try: () => agent.close(),
               catch: (cause) => runnerError(cause, "agent.close"),
             }),
           ),

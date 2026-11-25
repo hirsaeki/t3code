@@ -1,0 +1,13 @@
+Cursor SDK integration
+
+T3 Code uses the unmodified @cursor/sdk 1.5.0 package published by Anysphere.
+The SDK and any platform packages it includes retain their upstream notices and
+terms. T3 Code's MIT license does not apply to those third-party components.
+
+SDK documentation: https://cursor.com/docs/sdk/typescript
+Applicable terms: https://cursor.com/terms-of-service
+
+This notice describes the integration and grants no additional modification or
+redistribution rights. Release packaging must preserve the upstream package
+notices and satisfy their applicable terms. The previous T3-specific SDK patch
+is not applied or included in new source packages.

@@ -74,6 +74,54 @@ it.effect("reports a deleted worktree's scan as finished, not pending", () =>
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("reads account usage only after opt-in while retaining native model and auth discovery", () =>
+  Effect.gen(function* () {
+    const usage = vi.fn(async () => ({ rate_limits_available: true, rate_limits: {} }));
+    const initialization = {
+      account: { email: "dev@example.com", subscriptionType: "pro", tokenSource: "oauth" },
+      commands: [],
+      models: [{ value: "fixture-model", displayName: "Fixture", description: "" }],
+    };
+    const query = vi.spyOn(ClaudeSdk, "query").mockImplementation(() => ({
+      initializationResult: async () => initialization,
+      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: usage,
+    }) as ReturnType<typeof ClaudeSdk.query>);
+    yield* Effect.addFinalizer(() => Effect.sync(() => query.mockRestore()));
+    const fileSystem = yield* FileSystem.FileSystem;
+    const configDir = yield* fileSystem.makeTempDirectoryScoped();
+    const config = yield* decodeClaudeSettings({ binaryPath: "claude", homePath: configDir });
+    const environment = { PATH: (yield* HostProcess.Environment).PATH };
+    for (const includeAccountUsage of [undefined, false, true]) {
+      const capabilities = yield* probeClaudeCapabilities(
+        config,
+        environment,
+        configDir,
+        true,
+        includeAccountUsage === undefined ? undefined : Effect.succeed(includeAccountUsage),
+      );
+      assert.equal(capabilities.email, "dev@example.com");
+      assert.equal(capabilities.models?.[0]?.value, "fixture-model");
+      assert.equal(capabilities.usage !== undefined, includeAccountUsage === true);
+    }
+    // A slow initialization must not retain consent that was revoked before the optional request.
+    let consent = true;
+    query.mockImplementationOnce(() => ({
+      initializationResult: async () => {
+        consent = false;
+        return initialization;
+      },
+      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: usage,
+    }) as ReturnType<typeof ClaudeSdk.query>);
+    const revoked = yield* probeClaudeCapabilities(
+      config, environment, configDir, true, Effect.sync(() => consent),
+    );
+    assert.equal(revoked.email, "dev@example.com");
+    assert.isUndefined(revoked.usage);
+    assert.equal(usage.mock.calls.length, 1);
+    assert.deepEqual(usage.mock.calls[0], [{ skipBehaviors: true }]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.effect("keeps the probe subprocess alive while gateway model discovery can finish", () =>
   Effect.gen(function* () {
     let abortSignal: AbortSignal | undefined;

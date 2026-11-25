@@ -106,6 +106,9 @@ const rowCache = new Map<string, { version: string; rows: Map<number, CachedRow>
 // Concurrent scans of the same database would each read every uncached row.
 const scanLock = Semaphore.makeUnsafe(1);
 
+/** Wait for an in-flight read before clearing, so it cannot repopulate revoked data. */
+export const clearOpenCodeUsageCache = Effect.sync(() => rowCache.clear()).pipe(scanLock.withPermit);
+
 const isNotFound = (cause: PlatformError.PlatformError) => cause.reason._tag === "NotFound";
 const MESSAGE_PAGE_SIZE = 64;
 
@@ -367,8 +370,12 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
         // Rows before this window were not listed; keep them for a wider window until retention.
         for (const [rowId, entry] of reusable ?? []) {
           const created = entry.created;
-          if (typeof created === "number" && created < sinceMs && created >= retentionCutoffMs)
+          const timestampMs = entry.record?.timestampMs ?? created;
+          if (typeof created === "number" && created < sinceMs && typeof timestampMs === "number" && timestampMs >= retentionCutoffMs)
             cached.set(rowId, entry);
+        }
+        for (const [rowId, entry] of cached) {
+          if (entry.record !== null && entry.record.timestampMs < retentionCutoffMs) cached.delete(rowId);
         }
         rowCache.set(key, { version, rows: cached });
       }

@@ -1,4 +1,4 @@
-import { type AntigravitySettings, UsageReadError } from "@t3tools/contracts";
+import { type AntigravitySettings, type ServerSettings, UsageReadError } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import type {
@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 
 import { resolveAntigravityInstanceDirectories } from "../antigravityAuthSupport.ts";
 import {
@@ -27,6 +28,7 @@ export class AntigravityUsage extends Context.Service<
     readonly scan: (input: {
       readonly instances: ReadonlyArray<ProviderUsageInstance<AntigravitySettings>>;
       readonly windowStartMs: number;
+      readonly retentionCutoffMs: number;
     }) => Effect.Effect<ReadonlyArray<ProviderUsageScan>, UsageReadError>;
   }
 >()("t3/provider/Drivers/AntigravityUsage") {}
@@ -36,7 +38,19 @@ const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const host = yield* ProviderHost.ProviderHost;
-  const cache = makeAntigravityUsageCache();
+  let cache = makeAntigravityUsageCache();
+  const settingsChanges = yield* host.settings.subscribe;
+  const selectionKey = (settings: Pick<ServerSettings, "providerInstances" | "usageHistoryRetentionDays">) =>
+    JSON.stringify([Object.entries(settings.providerInstances).filter(([, instance]) => instance.driver === "antigravity"), settings.usageHistoryRetentionDays]);
+  let previousSelection = selectionKey(yield* host.settings.get.pipe(Effect.orElseSucceed(() => ({ providerInstances: {}, usageHistoryRetentionDays: 92 }))));
+  yield* settingsChanges.pipe(
+    Stream.runForEach((settings) => Effect.sync(() => {
+      const next = selectionKey(settings);
+      if (next !== previousSelection) cache = makeAntigravityUsageCache();
+      previousSelection = next;
+    })),
+    Effect.forkScoped,
+  );
 
   const dataRoots = Effect.fn("AntigravityUsage.dataRoots")(function* (
     environment: NodeJS.ProcessEnv,
@@ -47,7 +61,7 @@ const make = Effect.gen(function* () {
       .map((value) => value.trim())
       .filter(Boolean);
     const defaults = [
-      ...["antigravity", "antigravity-cli", "antigravity-ide", "antigravity-backup"].map((name) =>
+      ...["antigravity", "antigravity-cli"].map((name) =>
         path.join(home, ".gemini", name),
       ),
       path.join(home, ".config", "antigravity"),
@@ -65,6 +79,7 @@ const make = Effect.gen(function* () {
   const scan: AntigravityUsage["Service"]["scan"] = Effect.fn("AntigravityUsage.scan")(function* ({
     instances,
     windowStartMs,
+    retentionCutoffMs,
   }) {
     const roots: Array<string> = [];
     for (const instance of instances) roots.push(...(yield* dataRoots(instance.environment)));
@@ -97,10 +112,15 @@ const make = Effect.gen(function* () {
         : resolvedRoot;
       conversationDirs.add(yield* fileSystem.realPath(dir).pipe(Effect.orElseSucceed(() => dir)));
     }
-    const result = yield* readAntigravityUsage([...conversationDirs], windowStartMs, cache).pipe(
+    const scanCache = cache;
+    const result = yield* readAntigravityUsage([...conversationDirs], windowStartMs, scanCache).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
     );
+    // Keep cross-file attribution intact during the read; then evict any database with expired records.
+    for (const [file, entry] of scanCache) {
+      if (entry.data.candidates.some((candidate) => candidate.record.timestampMs < retentionCutoffMs)) scanCache.delete(file);
+    }
     const scanned: ProviderUsageScan[] = [];
     for (const dir of conversationDirs) {
       const exists = yield* fileSystem
@@ -128,6 +148,6 @@ export const antigravityUsageReader: ProviderUsageReader<AntigravitySettings, An
   kind: "scan",
   provider: "antigravity",
   rateModel: antigravityRateModel,
-  scan: ({ instances, windowStartMs }) =>
-    AntigravityUsage.pipe(Effect.flatMap((usage) => usage.scan({ instances, windowStartMs }))),
+  scan: ({ instances, windowStartMs, retentionCutoffMs }) =>
+    AntigravityUsage.pipe(Effect.flatMap((usage) => usage.scan({ instances, windowStartMs, retentionCutoffMs }))),
 };

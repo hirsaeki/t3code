@@ -138,6 +138,7 @@ export type ProviderUsageReader<Config, R> =
   | (ProviderUsageRateModel & {
       readonly kind: "scan";
       readonly provider: UsageProviderKind;
+      readonly accountWide?: true;
       /** Fails only when the whole usage read cannot go on; an unreadable source is a status. */
       readonly scan: (
         input: ProviderUsageScanInput<Config>,

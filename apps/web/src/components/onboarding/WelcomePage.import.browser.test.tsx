@@ -243,7 +243,7 @@ function setGrant(environmentId: EnvironmentId, allowed: boolean) {
   );
 }
 
-// Default selection only picks recently active projects, so pin "now".
+// Suggested projects use recent activity, so pin "now".
 const NOW = Date.parse("2026-01-01T00:00:00.000Z");
 
 function candidate(
@@ -316,6 +316,13 @@ async function click(label: string) {
   await act(async () => target.click());
 }
 
+async function chooseProjects() {
+  await click("Find projects in agent history");
+  const importProjects = document.querySelector<HTMLElement>('[role="checkbox"]');
+  expect(importProjects).not.toBeNull();
+  await act(async () => importProjects?.click());
+}
+
 async function mountWelcome() {
   return render(
     <RegistryContext.Provider value={appAtomRegistry}>
@@ -371,6 +378,17 @@ function setup() {
   return now;
 }
 
+it("starts without discovering or importing external history until the user opts in", async () => {
+  using _now = setup();
+  await using _screen = await mountWelcome();
+  expect(state.scan).not.toHaveBeenCalled();
+  await click("Start");
+  await vi.waitFor(() => expect(state.onDone).toHaveBeenCalledOnce());
+  expect(state.scan).not.toHaveBeenCalled();
+  expect(state.createProject).not.toHaveBeenCalled();
+  expect(state.importThreads).not.toHaveBeenCalled();
+});
+
 it("rechecks after project creation and can retry its history without recreating the project", async () => {
   using _now = setup();
   const creation = deferred<void>();
@@ -379,6 +397,7 @@ it("rechecks after project creation and can retry its history without recreating
     return recordProject(input);
   });
   await using _screen = await mountWelcome();
+  await chooseProjects();
   await click("Import 2 projects and start");
   expect(state.createProject).toHaveBeenCalledOnce();
   await act(async () => {
@@ -407,6 +426,7 @@ it("completes accepted imports when permission is revoked after the final server
     AsyncResult.success(await imported.promise),
   );
   await using _screen = await mountWelcome();
+  await chooseProjects();
   await click("Import 1 project and start");
   await act(async () => {
     setGrant(primaryId, false);
@@ -427,6 +447,7 @@ it("finishes setup without landing when the imported project never reaches the c
   state.waitForProject.mockRejectedValue(new Error("The project did not appear."));
   state.completeOnboarding.mockRejectedValueOnce(new Error("offline"));
   await using _screen = await mountWelcome();
+  await chooseProjects();
   using toastAdd = vi.spyOn(toastManager, "add");
 
   await click("Import 1 project and start");
@@ -450,6 +471,7 @@ it("waits for a ready agent to start, and Start without an agent still finishes 
   using _now = setup();
   appAtomRegistry.set(state.providers as Atom.Writable<ReadonlyArray<ServerProvider>>, []);
   await using _screen = await mountWelcome();
+  await chooseProjects();
   expect(button("Import 2 projects and start").disabled).toBe(true);
 
   await click("Start without an agent");
@@ -472,6 +494,7 @@ it("blocks leaving the page until the imported projects have landed", async () =
     },
   );
   await using screen = await mountWelcome();
+  await chooseProjects();
   await click("Import 2 projects and start");
 
   // A blocked navigation never settles, so it is not awaited.
@@ -507,10 +530,11 @@ it("blocks leaving the page until the imported projects have landed", async () =
   expect(state.createProject).toHaveBeenCalledTimes(2);
 });
 
-it("gives projects a later scan finds the default, unless the main box was unchecked", async () => {
+it("keeps newly discovered projects unselected until the user chooses them", async () => {
   using _now = setup();
   await using _screen = await mountWelcome();
-  // Turning on another agent rescans and finds a recent project the user has not seen.
+  expect(state.scan).not.toHaveBeenCalled();
+  await chooseProjects();
   const findProject = (path: string) =>
     act(async () =>
       appAtomRegistry.set(candidatesAtom(), [
@@ -520,20 +544,21 @@ it("gives projects a later scan finds the default, unless the main box was unche
     );
 
   await click("Review all 2");
-  await click("Select none");
   await findProject("/projects/third");
-  await vi.waitFor(() => expect(button("Import 1 project and start").disabled).toBe(false));
-
-  const importProjects = document.querySelector<HTMLElement>('[role="checkbox"]');
-  await act(async () => importProjects?.click());
+  await vi.waitFor(() => expect(button("Import 2 projects and start").disabled).toBe(false));
+  await click("Select none");
   await findProject("/projects/fourth");
   await vi.waitFor(() => expect(button("Start").disabled).toBe(false));
+  await click("Start");
+  expect(state.createProject).not.toHaveBeenCalled();
+  expect(state.importThreads).not.toHaveBeenCalled();
 });
 
 it("keeps the project choice across a visit to Settings until setup finishes", async () => {
   using _now = setup();
   {
     await using _first = await mountWelcome();
+    await chooseProjects();
     const importProjects = document.querySelector<HTMLElement>('[role="checkbox"]');
     await act(async () => importProjects?.click());
     await vi.waitFor(() => expect(button("Start").disabled).toBe(false));
@@ -547,7 +572,7 @@ it("keeps the project choice across a visit to Settings until setup finishes", a
     expect(state.createProject).not.toHaveBeenCalled();
   }
   await using _third = await mountWelcome();
-  expect(button("Import 2 projects and start").disabled).toBe(false);
+  expect(button("Start").disabled).toBe(false);
 });
 
 it("stays busy while setup saves after an import with nothing to open", async () => {
@@ -557,6 +582,7 @@ it("stays busy while setup saves after an import with nothing to open", async ()
   const saved = deferred<void>();
   state.completeOnboarding.mockImplementationOnce(() => saved.promise);
   await using _screen = await mountWelcome();
+  await chooseProjects();
 
   await click("Import 1 project and start");
   await vi.waitFor(() => expect(state.completeOnboarding).toHaveBeenCalledOnce());
@@ -585,6 +611,7 @@ it("leaves projects already in T3 Code out of the default import, unless the box
   ]);
   {
     await using _screen = await mountWelcome();
+    await chooseProjects();
     await vi.waitFor(() => expect(pageText()).toContain("Import 1 project and their threads"));
   }
 
@@ -605,6 +632,7 @@ it("keeps the started projects checked when the page opens again after a quit", 
   );
   {
     await using _first = await mountWelcome();
+    await chooseProjects();
     await click("Import 2 projects and start");
     await vi.waitFor(() => expect(state.importThreads).toHaveBeenCalledOnce());
   }
@@ -621,6 +649,7 @@ it("keeps the started projects checked when the page opens again after a quit", 
 it("keeps the project controls when a later scan fails", async () => {
   using _now = setup();
   await using _screen = await mountWelcome();
+  await chooseProjects();
   state.scanError = "The scan timed out.";
   await act(async () =>
     appAtomRegistry.set(candidatesAtom(), [...appAtomRegistry.get(candidatesAtom())]),
@@ -657,6 +686,7 @@ it("offers Update for a signed-in agent whose version is broken, and keeps Start
     },
   ]);
   await using _screen = await mountWelcome();
+  await chooseProjects();
   await vi.waitFor(() => expect(pageText()).toContain("Update Claude Code to 2.0 or later."));
   const update = [...document.querySelectorAll("a")].find(
     (element) => element.textContent?.trim() === "Update",
@@ -699,6 +729,7 @@ it("checks an agent again once its install command finishes in the setup termina
 it("keeps an import opt-out on the page when storage cannot save it", async () => {
   using _now = setup();
   await using _screen = await mountWelcome();
+  await chooseProjects();
   using _full = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
     throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
   });

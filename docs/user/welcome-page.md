@@ -64,16 +64,21 @@ app with a code from **Settings → Sharing & access**.
 
 ## Projects
 
-T3 Code finds directories that Claude Code, Codex or Pi has used. Git repositories
+Choose **Find projects in agent history** to let T3 Code look for directories that
+Claude Code, Codex or Pi has used on this computer. Opening the Welcome page does
+not scan external histories unless you have saved import choices from an earlier
+visit. You can choose **Start** without scanning or importing anything. Git repositories
 are listed first, newest activity on top. When the remote is on GitHub, the
 group shows the repository as `owner/name`. Clones with the same remote share
 one group. Directories that are not git repositories sit under "Other folders".
 
-The page offers git repositories active within the last 30 days with at least
-three conversations, already checked. Projects already in T3 Code are not checked
-again. Uncheck the box to start without them, or
-select **Review all** to pick from everything found, with "Select all" and
-"Select none". Linked worktrees of bare repositories
+Projects start unchecked. Checking the import box selects suggested new git
+repositories active within the last 30 days with at least three conversations.
+Select **Review all** to choose individual projects, with "Select all" and
+"Select none". A later scan does not select newly found projects for you. Import
+starts only after you choose projects and select the import-and-start button.
+These import choices are separate from permission to collect usage statistics.
+Linked worktrees of bare repositories
 can be offered as separate projects. Conversations in other linked git worktrees
 count toward their main checkout, so a repository is offered even if you only
 worked in its worktrees. Codex scratch directories under `Documents/Codex`, and
@@ -84,8 +89,8 @@ projects it found and warns when projects or conversations may be missing.
 
 Imported projects include Claude, Codex and Pi conversations active within the last
 30 days. You can continue those conversations in T3 Code. Pi is off by default:
-open **Add more agents** and select **Turn on** next to Pi, and the page looks for
-its sessions too. Pi sessions
+open **Add more agents** and select **Turn on** next to Pi. If you have enabled
+project discovery, the page looks for its sessions too. Pi sessions
 are read from each enabled Pi provider's session directory, which follows
 `PI_CODING_AGENT_SESSION_DIR` and `PI_CODING_AGENT_DIR` in its environment. A
 Pi conversation imports its active branch, the one Pi reopens.

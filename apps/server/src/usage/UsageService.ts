@@ -1,6 +1,7 @@
 import {
   type ProviderInstanceConfig,
   ProviderInstanceId,
+  resolveProviderInstanceEnabled,
   USAGE_CONTRACT_VERSION,
   type ServerSettings as ServerSettingsValue,
   type UsageProviderKind,
@@ -25,6 +26,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
@@ -33,6 +35,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { BUILT_IN_USAGE_DRIVERS, type BuiltInUsageReadersEnv } from "../provider/builtInDrivers.ts";
 import type { ProviderDriver } from "@t3tools/provider-core/server/driver";
+import { clearOpenCodeUsageCache } from "@t3tools/provider-opencode/server";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import type {
   ProviderUsageInstance,
@@ -123,7 +126,11 @@ const encodeRatesCache = Schema.encodeEffect(Schema.fromJsonString(RatesCacheFil
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeUsageRecordKey = Schema.encodeSync(ScanCacheJson);
-const CachedSource = Schema.Struct({ dir: Schema.String, volumeId: Schema.String });
+const CachedSource = Schema.Struct({
+  dir: Schema.String,
+  volumeId: Schema.String,
+  instanceIds: Schema.Array(ProviderInstanceId).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+});
 
 function isLaterRead(a: CachedFile, b: CachedFile): boolean {
   return a.mtimeMs > b.mtimeMs || (a.mtimeMs === b.mtimeMs && a.size > b.size);
@@ -361,29 +368,94 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  const instanceUsageKey = (instance: ProviderInstanceConfig | undefined) =>
+    instance === undefined
+      ? ""
+      : JSON.stringify([
+          instance.driver,
+          instance.enabled,
+          instance.config,
+          instance.environment,
+          instance.usageHistoryEnabled === true,
+          instance.accountUsageEnabled === true,
+        ]);
+  const consentKey = (settings: ServerSettingsValue) =>
+    JSON.stringify([
+      settings.usageHistoryRetentionDays,
+      Object.entries(settings.providerInstances).map(([id, instance]) => [id, instanceUsageKey(instance)]),
+    ]);
+  let previousInstances: ServerSettingsValue["providerInstances"] | undefined;
+
+  const purgeOrphanFiles = () => {
+    for (const [filePath, entry] of fileCache) {
+      if ([...sourceCache].some(([key, source]) =>
+        key.startsWith(`${entry.provider}\0`) && isWithinDirectory(filePath, source.dir),
+      )) continue;
+      fileCache.delete(filePath);
+      cacheDirty = true;
+    }
+    for (const key of coveredSince.keys()) {
+      if (![...sourceCache].some(([sourceKey, source]) =>
+        key === `${sourceKey.split("\0")[0]}\0${source.dir}`,
+      )) coveredSince.delete(key);
+    }
+    for (const dir of physicalSourceIds.keys()) {
+      if (![...sourceCache.values()].some((source) => source.dir === dir)) physicalSourceIds.delete(dir);
+    }
+  };
+
+  const reconcileConsent = (settings: ServerSettingsValue) => {
+    for (const [key, source] of sourceCache) {
+      const instanceIds = source.instanceIds.filter((id) => {
+        const instance = settings.providerInstances[id];
+        return instance !== undefined && instance.usageHistoryEnabled === true &&
+          resolveProviderInstanceEnabled(instance) &&
+          (previousInstances === undefined || instanceUsageKey(previousInstances[id]) === instanceUsageKey(instance));
+      });
+      if (instanceIds.length === 0) {
+        sourceCache.delete(key);
+        cacheDirty = true;
+      } else if (instanceIds.length !== source.instanceIds.length) {
+        sourceCache.set(key, { ...source, instanceIds });
+        cacheDirty = true;
+      }
+    }
+    previousInstances = settings.providerInstances;
+    purgeOrphanFiles();
+  };
+
+  const withCurrentConsent = Effect.fn("UsageService.withCurrentConsent")(function* <A>(
+    settings: ServerSettingsValue,
+    use: () => A,
+  ) {
+    return yield* settingsService.withSettingsSnapshot((current) => {
+      reconcileConsent(current);
+      return consentKey(settings) === consentKey(current)
+        ? Effect.sync(use)
+        : Effect.fail(new UsageReadError({ reason: "scanFailed", detail: "Usage sources or retention changed during the scan. Refresh to use the current settings." }));
+    }).pipe(Effect.mapError((cause) => cause instanceof UsageReadError ? cause : new UsageReadError({
+      reason: "scanFailed", detail: "Usage source settings could not be verified.", cause,
+    })));
+  });
+
   const usageInstances = Effect.fn("UsageService.usageInstances")(function* <Config>(
     driver: ProviderDriver<Config, unknown, unknown>,
     settings: ServerSettingsValue,
+    accountWide = false,
   ) {
-    const entries: Array<
-      readonly [ProviderInstanceId, Pick<ProviderInstanceConfig, "config" | "environment">, boolean]
-    > = Object.entries(settings.providerInstances)
-      .filter(([, instance]) => instance.driver === driver.driverKind)
-      .map(([id, instance]) => [ProviderInstanceId.make(id), instance, true] as const);
-    // History in the driver's default home stays counted after every instance moves elsewhere; readers dedupe shared directories.
-    entries.push([ProviderInstanceId.make(driver.driverKind), {}, false]);
+    const entries = Object.entries(settings.providerInstances)
+      .filter(([, instance]) => instance.driver === driver.driverKind &&
+        resolveProviderInstanceEnabled(instance) &&
+        (accountWide ? instance.accountUsageEnabled === true : instance.usageHistoryEnabled === true));
     const decodeConfig = Schema.decodeUnknownOption(driver.configSchema);
     return yield* Effect.forEach(
       entries,
-      Effect.fnUntraced(function* ([instanceId, instance, configured]) {
+      Effect.fnUntraced(function* ([id, instance]) {
         const instanceConfig: ProviderUsageInstance<Config> = {
-          instanceId,
+          instanceId: ProviderInstanceId.make(id),
           config: Option.getOrUndefined(decodeConfig(instance.config ?? {})),
-          environment: yield* mergeProviderInstanceEnvironment(
-            instance.environment,
-            hostEnvironment,
-          ),
-          configured,
+          environment: yield* mergeProviderInstanceEnvironment(instance.environment, hostEnvironment),
+          configured: true,
         };
         return instanceConfig;
       }),
@@ -398,13 +470,18 @@ export const make = Effect.gen(function* () {
     const dirs: Array<TranscriptSource> = [];
     const pending: Array<ScannedDir> = [];
     const seen = new Set<string>();
+    const selectedSources = new Set<string>();
     for (const { driver, reader } of transcriptReaders) {
       const { provider, format } = reader;
       const directories = yield* Effect.forEach(
         yield* usageInstances(driver, settings),
-        (instance) => reader.directories(instance, { awaitRefresh }),
+        (instance) => reader.directories(instance, { awaitRefresh }).pipe(
+          Effect.map((directories) => directories.map((directory) => ({ ...directory, instanceId: instance.instanceId }))),
+        ),
       );
-      for (const { dir: directory, fileName, refreshing } of directories.flat()) {
+      for (const { dir: directory, fileName, refreshing, instanceId } of directories.flat()) {
+        const sourceKey = provider + "\0" + directory;
+        selectedSources.add(sourceKey);
         if (refreshing) {
           const key = `${provider}\0${directory}`;
           if (seen.has(key)) continue;
@@ -412,7 +489,6 @@ export const make = Effect.gen(function* () {
           pending.push({ provider, dir: directory, volumeId: "", files: [], refreshing });
           continue;
         }
-        const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
         const dir = yield* fileSystem
           .realPath(directory)
@@ -423,19 +499,23 @@ export const make = Effect.gen(function* () {
           .some(
             ([filePath, entry]) =>
               entry.provider === provider &&
-              entry.mtimeMs >= retentionCutoffMs &&
-              (entry.records.length + entry.tailRecords.length > 0 ||
-                entry.malformedRecords.length > 0) &&
+              (entry.records.some((record) => record.timestampMs >= retentionCutoffMs) ||
+                entry.tailRecords.some((record) => record.timestampMs >= retentionCutoffMs) ||
+                entry.malformedRecords.some((timestamp) => timestamp >= retentionCutoffMs)) &&
               isWithinDirectory(filePath, dir),
           );
         const volumeId =
           previous?.dir === dir && (hasRetainedHistory || !currentVolumeId)
             ? previous.volumeId || currentVolumeId
             : currentVolumeId;
-        if (previous?.dir !== dir || previous.volumeId !== volumeId) {
-          sourceCache.set(sourceKey, { dir, volumeId });
-          cacheDirty = true;
-        }
+        yield* withCurrentConsent(settings, () => {
+          const current = sourceCache.get(sourceKey);
+          const instanceIds = [...new Set([...(current?.instanceIds ?? []), instanceId])];
+          if (current?.dir !== dir || current.volumeId !== volumeId || instanceIds.length !== current.instanceIds.length) {
+            sourceCache.set(sourceKey, { dir, volumeId, instanceIds });
+            cacheDirty = true;
+          }
+        });
         const key = `${provider}\0${dir}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -450,12 +530,23 @@ export const make = Effect.gen(function* () {
         });
       }
     }
+    yield* withCurrentConsent(settings, () => {
+      for (const key of sourceCache.keys()) {
+        if (!selectedSources.has(key)) {
+          sourceCache.delete(key);
+          cacheDirty = true;
+        }
+      }
+      purgeOrphanFiles();
+    });
     return { dirs, pending };
   });
 
   // Share first loads so concurrent readers cannot scan against a still-empty cache.
   const ensureScanCacheLoaded = yield* Effect.cached(
     Effect.gen(function* () {
+      // Rewrite once even when decoding fails, so invalid and superseded caches are cleared.
+      cacheDirty = true;
       const readDocument = (filePath: string) =>
         fileSystem.readFileString(filePath).pipe(
           Effect.flatMap((raw) => decodeScanCacheFile(raw)),
@@ -466,7 +557,6 @@ export const make = Effect.gen(function* () {
       for (const fileName of LEGACY_SCAN_CACHE_FILE_NAMES) {
         if (document !== null) break;
         document = yield* readDocument(path.join(config.stateDir, fileName));
-        cacheDirty = document !== null;
       }
       if (document === null) return;
       const decoded = decodeScanCache(document, transcriptFormats);
@@ -493,7 +583,6 @@ export const make = Effect.gen(function* () {
 
   // The saved cache supersedes older versions. Temp folders an aborted write left behind are
   // removed once idle for an hour, so a write in progress from another server survives.
-  let supersededFilesRemoved = false;
   const removeSupersededCacheFiles = Effect.gen(function* () {
     for (const fileName of LEGACY_SCAN_CACHE_FILE_NAMES) {
       yield* fileSystem.remove(path.join(config.stateDir, fileName)).pipe(Effect.ignore);
@@ -517,32 +606,43 @@ export const make = Effect.gen(function* () {
     }
   }).pipe(Effect.ignore);
 
+  let openCodeSettingsKey: string | undefined;
+  const clearChangedOpenCodeCache = Effect.fn("UsageService.clearChangedOpenCodeCache")(function* (settings: ServerSettingsValue) {
+    const key = JSON.stringify([
+      Object.entries(settings.providerInstances).filter(([, instance]) => instance.driver === "opencode"),
+      settings.usageHistoryRetentionDays,
+    ]);
+    if (key === openCodeSettingsKey) return;
+    yield* clearOpenCodeUsageCache;
+    openCodeSettingsKey = key;
+  });
+
   // Clear dirty before encoding to retain concurrent changes; restore it on failure for retry.
-  const persistCaches = Effect.gen(function* () {
-    if (cacheDirty) {
-      cacheDirty = false;
-      yield* Effect.sync(() =>
-        writeScanCache(fileCache, {
+  const persistCaches = settingsService.withSettingsSnapshot((current) => Effect.gen(function* () {
+    reconcileConsent(current);
+    yield* clearChangedOpenCodeCache(current);
+    const nowMs = yield* Clock.currentTimeMillis;
+    const cutoffMs = current.usageHistoryRetentionDays === "unlimited"
+      ? 0
+      : Math.max(0, nowMs - current.usageHistoryRetentionDays * 24 * 60 * 60 * 1000);
+    if (pruneScanCache(fileCache, cutoffMs) > 0) cacheDirty = true;
+    if (!cacheDirty) return;
+    cacheDirty = false;
+    yield* (fileCache.size === 0 && sourceCache.size === 0
+      ? fileSystem.remove(scanCachePath).pipe(Effect.catchIf((error) => error.reason._tag === "NotFound", () => Effect.void))
+      : writeCacheFile(scanCachePath, writeScanCache(fileCache, {
           sources: Object.fromEntries(sourceCache),
           coveredSince: Object.fromEntries(coveredSince),
-        }),
-      ).pipe(
-        Effect.flatMap((contents) => writeCacheFile(scanCachePath, contents)),
-        Effect.andThen(
-          Effect.suspend(() => {
-            if (supersededFilesRemoved) return Effect.void;
-            supersededFilesRemoved = true;
-            return removeSupersededCacheFiles;
-          }),
-        ),
-        Effect.catchCause(() =>
-          Effect.sync(() => {
-            cacheDirty = true;
-          }),
-        ),
-      );
-    }
-  }).pipe(persistLock.withPermit, Effect.withSpan("UsageService.persistCaches"));
+        }))
+    ).pipe(
+      Effect.andThen(removeSupersededCacheFiles),
+      Effect.catchCause(() => Effect.sync(() => { cacheDirty = true; })),
+    );
+  })).pipe(
+    persistLock.withPermit,
+    Effect.catchCause(() => Effect.sync(() => { cacheDirty = true; })),
+    Effect.withSpan("UsageService.persistCaches"),
+  );
 
   const pendingPersists = new Set<Fiber.Fiber<void>>();
   const schedulePersist = Effect.forkDetach(persistCaches).pipe(
@@ -551,14 +651,14 @@ export const make = Effect.gen(function* () {
       fiber.addObserver(() => pendingPersists.delete(fiber));
     }),
   );
-  const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...pendingPersists])).pipe(
+  const awaitPersisted = Effect.andThen(persistCaches, Effect.suspend(() => Fiber.awaitAll([...pendingPersists]))).pipe(
     Effect.asVoid,
   );
   yield* Effect.addFinalizer(() => awaitPersisted);
 
   /**
    * Reads run concurrently, and the caller stores updates in walk order rather
-   * than completion order: saved records of deleted transcripts aggregate in
+   * than completion order: cached records aggregate in
    * cache order, where the first copy of a duplicate decides its bucket. Untraced: a scan
    * reads thousands of files, so scanTranscriptDir records the counts instead.
    */
@@ -705,6 +805,7 @@ export const make = Effect.gen(function* () {
     source: TranscriptSource,
     windowStartMs: number,
     fromMemory: boolean,
+    settings: ServerSettingsValue,
   ) {
     const { provider, format, dir, volumeId, physicalSourceId, fileName } = source;
     const identity = {
@@ -717,10 +818,16 @@ export const make = Effect.gen(function* () {
       .exists(dir)
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
     if (!exists) {
-      cover(source, windowStartMs);
+      yield* withCurrentConsent(settings, () => {
+        for (const [key, cached] of sourceCache) {
+          if (key.startsWith(`${provider}\0`) && cached.dir === dir) sourceCache.delete(key);
+        }
+        purgeOrphanFiles();
+        cacheDirty = true;
+      });
       return { ...identity, files: null } satisfies ScannedDir;
     }
-    // scanSummary aggregates the saved files, as it does for a deleted directory.
+    // scanSummary can use saved files when the current walk is incomplete.
     if (fromMemory) return { ...identity, files: [] } satisfies ScannedDir;
     const { files, walked, failedPaths } = yield* Effect.promise(() =>
       listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
@@ -733,7 +840,7 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
     );
-    const parsedFiles = read.map(({ path, records, malformedRecords, update }) => {
+    const parsedFiles = yield* withCurrentConsent(settings, () => read.map(({ path, records, malformedRecords, update }) => {
       if (update === undefined) return { path, records, malformedRecords };
       // A scan of another window may have cached its own read of this file
       // meanwhile. Then keep whichever read saw the later file, so a slower
@@ -752,7 +859,18 @@ export const make = Effect.gen(function* () {
         cacheDirty = true;
       }
       return { path, records, malformedRecords };
-    });
+    }));
+    if (failedPaths === 0) {
+      const present = new Set(walked);
+      yield* withCurrentConsent(settings, () => {
+        for (const [filePath, entry] of fileCache) {
+          if (entry.provider === provider && isWithinDirectory(filePath, dir) && !present.has(filePath)) {
+            fileCache.delete(filePath);
+            cacheDirty = true;
+          }
+        }
+      });
+    }
     const livePaths = new Set(files.map((file) => file.path));
     for (const file of read) {
       if (file.failed || !file.path.endsWith(".jsonl.zst")) continue;
@@ -790,9 +908,10 @@ export const make = Effect.gen(function* () {
     const scans = Effect.forEach(
       scanReaders,
       ({ driver, reader }) =>
-        usageInstances(driver, settings).pipe(
-          Effect.flatMap((instances) =>
-            reader.scan({ instances, settings, windowStartMs, retentionCutoffMs, awaitRefresh }),
+        usageInstances(driver, settings, reader.accountWide === true).pipe(
+          Effect.flatMap((instances) => instances.length === 0
+            ? Effect.succeed([])
+            : reader.scan({ instances, settings, windowStartMs, retentionCutoffMs, awaitRefresh }),
           ),
           Effect.flatMap((sources) =>
             Effect.forEach(sources, ({ volumeId, ...source }) =>
@@ -821,7 +940,7 @@ export const make = Effect.gen(function* () {
 
     // Scan independent sources together, directories sequentially to bound open files; keep order, since the first copy decides a duplicate's bucket.
     const [transcripts, scanDirs] = yield* Effect.all(
-      [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory)), scans],
+      [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory, settings)), scans],
       { concurrency: "unbounded" },
     );
     const scanned: readonly ScannedDir[] = [...transcripts, ...pending, ...scanDirs.flat()];
@@ -866,6 +985,7 @@ export const make = Effect.gen(function* () {
 
     const startedAtMs = yield* Clock.currentTimeMillis;
     yield* ensureScanCacheLoaded;
+    yield* withCurrentConsent(settings, () => undefined);
 
     const windowStart = DateTime.make(`${input.sinceDay}T00:00:00Z`);
     if (Option.isNone(windowStart)) {
@@ -927,7 +1047,6 @@ export const make = Effect.gen(function* () {
     const sources: UsageSource[] = [];
 
     // Deleted transcripts' saved usage still aggregates and deduplicates normally.
-    const retainedSinceMs = Math.max(windowStartMs, retentionCutoffMs);
     // Saved paths are files below a scanned root, so their folder decides; folders repeat thousands of times.
     const withinDir = (dir: string) => {
       const foldersWithin = new Map<string, boolean>();
@@ -948,7 +1067,6 @@ export const make = Effect.gen(function* () {
       for (const [filePath, entry] of fileCache) {
         if (
           entry.provider !== provider ||
-          entry.mtimeMs < retainedSinceMs ||
           livePaths.has(filePath) ||
           !isRetained(filePath)
         )
@@ -965,7 +1083,7 @@ export const make = Effect.gen(function* () {
       return retainedFiles.flatMap((file) => {
         // A keyed copy outside the window still claims its key, so a later copy is not counted.
         const records = file.records.filter(
-          (record) => record.dedupeKey !== null || inWindow(record.timestampMs),
+          (record) => record.timestampMs >= retentionCutoffMs && (record.dedupeKey !== null || inWindow(record.timestampMs)),
         );
         const malformedRecords = file.malformedRecords.filter(inWindow);
         return records.length === 0 && malformedRecords.length === 0
@@ -974,7 +1092,7 @@ export const make = Effect.gen(function* () {
       });
     });
     // Usage two transcripts share counts in the first one, so saved files take the order an exact
-    // scan reads them in: walked files in walk order, then the directory's deleted files.
+    // scan reads them in: walked files in walk order, then any unread cached files.
     for (const { provider, dir, walked } of fromMemory ? [] : scannedDirs) {
       if (walked === undefined) continue;
       const within = withinDir(dir);
@@ -1200,7 +1318,7 @@ export const make = Effect.gen(function* () {
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
     } satisfies UsageSummary;
-    return { summary, fromMemory };
+    return yield* withCurrentConsent(settings, () => ({ summary, fromMemory }));
   });
 
   const readWindow = Effect.fn("UsageService.readWindow")(function* (
@@ -1268,6 +1386,16 @@ export const make = Effect.gen(function* () {
     );
     return yield* Deferred.await(deferred);
   });
+
+  const settingsChanges = yield* settingsService.subscribeChanges;
+  yield* ensureScanCacheLoaded;
+  yield* persistCaches;
+  yield* settingsChanges.pipe(
+    Stream.map(consentKey),
+    Stream.changes,
+    Stream.runForEach(() => persistCaches),
+    Effect.forkScoped,
+  );
 
   return { readSummary, refreshRates, awaitPersisted } as const;
 });

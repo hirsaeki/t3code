@@ -27,8 +27,16 @@ export const makeCursorCredentialStore = Effect.fn("makeCursorCredentialStore")(
   legacyFile?: string,
 ) {
   const credentials = yield* (yield* ProviderHost.ProviderHost).credentials("cursor", instanceId);
+  const fileSystem = yield* FileSystem.FileSystem;
+  const removeLegacy =
+    legacyFile === undefined
+      ? Effect.void
+      : fileSystem.remove(legacyFile).pipe(
+          Effect.catch((cause) =>
+            cause.reason._tag === "NotFound" ? Effect.void : Effect.fail(cause),
+          ),
+        );
   if (legacyFile !== undefined) {
-    const fileSystem = yield* FileSystem.FileSystem;
     yield* Effect.gen(function* () {
       const legacy = yield* fileSystem.readFileString(legacyFile).pipe(Effect.option);
       if (Option.isNone(legacy)) return;
@@ -44,10 +52,12 @@ export const makeCursorCredentialStore = Effect.fn("makeCursorCredentialStore")(
       ) {
         yield* credentials.set(new TextEncoder().encode(legacy.value));
       }
-      yield* fileSystem.remove(legacyFile);
+      yield* removeLegacy;
     }).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("Could not migrate legacy Cursor credentials", error),
+      Effect.catch(() =>
+        Effect.logWarning(
+          "Could not migrate legacy Cursor credentials; the legacy file was retained.",
+        ),
       ),
     );
   }
@@ -86,7 +96,7 @@ export const makeCursorCredentialStore = Effect.fn("makeCursorCredentialStore")(
           Effect.flatMap((encoded) => credentials.set(new TextEncoder().encode(encoded))),
         ),
       ),
-    clear: () => runPromise(credentials.remove),
+    clear: () => runPromise(credentials.remove.pipe(Effect.andThen(removeLegacy))),
   };
   return { store, binding: credentials.binding };
 });
