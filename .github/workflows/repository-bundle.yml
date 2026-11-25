@@ -42,6 +42,7 @@ jobs:
         with:
           ref: ${{ steps.select.outputs.ref }}
           fetch-depth: 0
+          sparse-checkout: .github
           persist-credentials: false
 
       - name: Create git bundle
@@ -63,8 +64,8 @@ jobs:
           mkdir -p bundle-parts
           split -b 32M -d -a 2 "$RUNNER_TEMP/repo.bundle" bundle-parts/repo.bundle.part-
           count="$(find bundle-parts -maxdepth 1 -type f -name 'repo.bundle.part-*' | wc -l)"
-          if (( count > 16 )); then
-            echo "::error::Repository bundle requires $count chunks; this workflow supports up to 16 x 32 MiB chunks."
+          if (( count > 32 )); then
+            echo "::error::Repository bundle requires $count chunks; this workflow supports up to 32 x 32 MiB chunks."
             exit 1
           fi
           ls -lh bundle-parts
@@ -245,6 +246,182 @@ jobs:
           retention-days: 7
           compression-level: 0
 
+      - name: Upload git bundle part 16
+        id: upload_16
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-16') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-16
+          path: bundle-parts/repo.bundle.part-16
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 17
+        id: upload_17
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-17') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-17
+          path: bundle-parts/repo.bundle.part-17
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 18
+        id: upload_18
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-18') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-18
+          path: bundle-parts/repo.bundle.part-18
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 19
+        id: upload_19
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-19') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-19
+          path: bundle-parts/repo.bundle.part-19
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 20
+        id: upload_20
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-20') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-20
+          path: bundle-parts/repo.bundle.part-20
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 21
+        id: upload_21
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-21') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-21
+          path: bundle-parts/repo.bundle.part-21
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 22
+        id: upload_22
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-22') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-22
+          path: bundle-parts/repo.bundle.part-22
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 23
+        id: upload_23
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-23') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-23
+          path: bundle-parts/repo.bundle.part-23
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 24
+        id: upload_24
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-24') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-24
+          path: bundle-parts/repo.bundle.part-24
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 25
+        id: upload_25
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-25') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-25
+          path: bundle-parts/repo.bundle.part-25
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 26
+        id: upload_26
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-26') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-26
+          path: bundle-parts/repo.bundle.part-26
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 27
+        id: upload_27
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-27') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-27
+          path: bundle-parts/repo.bundle.part-27
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 28
+        id: upload_28
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-28') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-28
+          path: bundle-parts/repo.bundle.part-28
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 29
+        id: upload_29
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-29') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-29
+          path: bundle-parts/repo.bundle.part-29
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 30
+        id: upload_30
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-30') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-30
+          path: bundle-parts/repo.bundle.part-30
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Upload git bundle part 31
+        id: upload_31
+        if: ${{ hashFiles('bundle-parts/repo.bundle.part-31') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-git-bundle-${{ steps.bundle.outputs.commit }}-${{ github.run_id }}-${{ github.run_attempt }}-part-31
+          path: bundle-parts/repo.bundle.part-31
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
       - name: Publish result manifest and close trigger issue
         if: ${{ github.event_name == 'issues' }}
         uses: actions/github-script@v8
@@ -337,6 +514,86 @@ jobs:
                 id: '${{ steps.upload_15.outputs.artifact-id }}',
                 url: '${{ steps.upload_15.outputs.artifact-url }}',
                 digest: '${{ steps.upload_15.outputs.artifact-digest }}',
+              },
+              '16': {
+                id: '${{ steps.upload_16.outputs.artifact-id }}',
+                url: '${{ steps.upload_16.outputs.artifact-url }}',
+                digest: '${{ steps.upload_16.outputs.artifact-digest }}',
+              },
+              '17': {
+                id: '${{ steps.upload_17.outputs.artifact-id }}',
+                url: '${{ steps.upload_17.outputs.artifact-url }}',
+                digest: '${{ steps.upload_17.outputs.artifact-digest }}',
+              },
+              '18': {
+                id: '${{ steps.upload_18.outputs.artifact-id }}',
+                url: '${{ steps.upload_18.outputs.artifact-url }}',
+                digest: '${{ steps.upload_18.outputs.artifact-digest }}',
+              },
+              '19': {
+                id: '${{ steps.upload_19.outputs.artifact-id }}',
+                url: '${{ steps.upload_19.outputs.artifact-url }}',
+                digest: '${{ steps.upload_19.outputs.artifact-digest }}',
+              },
+              '20': {
+                id: '${{ steps.upload_20.outputs.artifact-id }}',
+                url: '${{ steps.upload_20.outputs.artifact-url }}',
+                digest: '${{ steps.upload_20.outputs.artifact-digest }}',
+              },
+              '21': {
+                id: '${{ steps.upload_21.outputs.artifact-id }}',
+                url: '${{ steps.upload_21.outputs.artifact-url }}',
+                digest: '${{ steps.upload_21.outputs.artifact-digest }}',
+              },
+              '22': {
+                id: '${{ steps.upload_22.outputs.artifact-id }}',
+                url: '${{ steps.upload_22.outputs.artifact-url }}',
+                digest: '${{ steps.upload_22.outputs.artifact-digest }}',
+              },
+              '23': {
+                id: '${{ steps.upload_23.outputs.artifact-id }}',
+                url: '${{ steps.upload_23.outputs.artifact-url }}',
+                digest: '${{ steps.upload_23.outputs.artifact-digest }}',
+              },
+              '24': {
+                id: '${{ steps.upload_24.outputs.artifact-id }}',
+                url: '${{ steps.upload_24.outputs.artifact-url }}',
+                digest: '${{ steps.upload_24.outputs.artifact-digest }}',
+              },
+              '25': {
+                id: '${{ steps.upload_25.outputs.artifact-id }}',
+                url: '${{ steps.upload_25.outputs.artifact-url }}',
+                digest: '${{ steps.upload_25.outputs.artifact-digest }}',
+              },
+              '26': {
+                id: '${{ steps.upload_26.outputs.artifact-id }}',
+                url: '${{ steps.upload_26.outputs.artifact-url }}',
+                digest: '${{ steps.upload_26.outputs.artifact-digest }}',
+              },
+              '27': {
+                id: '${{ steps.upload_27.outputs.artifact-id }}',
+                url: '${{ steps.upload_27.outputs.artifact-url }}',
+                digest: '${{ steps.upload_27.outputs.artifact-digest }}',
+              },
+              '28': {
+                id: '${{ steps.upload_28.outputs.artifact-id }}',
+                url: '${{ steps.upload_28.outputs.artifact-url }}',
+                digest: '${{ steps.upload_28.outputs.artifact-digest }}',
+              },
+              '29': {
+                id: '${{ steps.upload_29.outputs.artifact-id }}',
+                url: '${{ steps.upload_29.outputs.artifact-url }}',
+                digest: '${{ steps.upload_29.outputs.artifact-digest }}',
+              },
+              '30': {
+                id: '${{ steps.upload_30.outputs.artifact-id }}',
+                url: '${{ steps.upload_30.outputs.artifact-url }}',
+                digest: '${{ steps.upload_30.outputs.artifact-digest }}',
+              },
+              '31': {
+                id: '${{ steps.upload_31.outputs.artifact-id }}',
+                url: '${{ steps.upload_31.outputs.artifact-url }}',
+                digest: '${{ steps.upload_31.outputs.artifact-digest }}',
               },
             };
 
