@@ -87,8 +87,9 @@ When your app and server support different providers, usage totals may cover onl
 your app understands. Update the app to include newly supported providers.
 
 On web and desktop, use the environment dropdown to select costs, tokens, and limits. The current
-environment starts selected; remote environments are queried only after you select them. The
-dropdown shows which selected environments are still scanning;
+environment starts selected when available; otherwise choose an environment first. Other
+environments are queried only after you select them. On mobile, choose environments from the filter
+menu before usage is loaded. The dropdown shows which selected environments are still scanning;
 results appear as each one responds, and figures still updating are dimmed. Cursor shows its last
 saved totals first, then updates them when Cursor's API responds.
 

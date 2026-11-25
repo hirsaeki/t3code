@@ -8,7 +8,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as SqlClient from "effect/sql/SqlClient";
 import { vi } from "vite-plus/test";
 
@@ -100,6 +102,116 @@ const recordedForkDatabase = Effect.fn(function* (
 });
 
 describe("readOpenCodeUsage", () => {
+  it.effect.each(["database", "root", "table", "read-error", "expired-read-error"] as const)(
+    "reclaims removed or expired cached sources during a %s inventory",
+    (removed) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const parent = yield* fs.makeTempDirectoryScoped({ prefix: "usage-source-purge-" });
+        const root = path.join(parent, "history");
+        const file = path.join(root, "opencode.db");
+        yield* fs.makeDirectory(root);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* openDatabase(file);
+            yield* db.unsafe(
+              "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)",
+            );
+            yield* db.unsafe("INSERT INTO message VALUES ('original', 'private-session', ?, 1000)", [
+              JSON.stringify({
+                modelID: "private-model",
+                time: { created: 1000 },
+                tokens: { output: 5 },
+              }),
+            ]);
+          }),
+        );
+        const originalBytes = yield* fs.readFile(file);
+        const originalInfo = yield* fs.stat(file);
+        const fingerprint = Effect.gen(function* () {
+          const main = yield* fs.stat(file);
+          const wal = yield* Effect.option(fs.stat(`${file}-wal`));
+          return {
+            device: main.dev,
+            inode: main.ino,
+            birthtime: main.birthtime,
+            size: main.size,
+            mtime: main.mtime,
+            wal: Option.map(wal, (info) => ({ size: info.size, mtime: info.mtime })),
+          };
+        });
+        const originalFingerprint = yield* fingerprint;
+        let bodyReads = 0;
+        const originalAll = NodeSqlite.StatementSync.prototype.all;
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(NodeSqlite.StatementSync.prototype, "all").mockImplementation(function (
+              this: NodeSqlite.StatementSync,
+              ...params
+            ) {
+              if (this.sourceSQL.includes("data ->")) bodyReads++;
+              return originalAll.apply(this, params);
+            }),
+          ),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        assert.strictEqual((yield* readOpenCodeUsage(root, 0)).files[0]?.records.length, 1);
+        bodyReads = 0;
+        yield* readOpenCodeUsage(root, 0);
+        assert.strictEqual(bodyReads, 0);
+
+        if (removed === "database") yield* fs.rename(file, path.join(root, "saved"));
+        if (removed === "root") yield* fs.rename(root, path.join(parent, "saved"));
+        if (removed === "table") {
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const db = yield* openDatabase(file);
+              yield* db.unsafe("DROP TABLE message");
+            }),
+          );
+        }
+        const inventoryFails = removed === "read-error" || removed === "expired-read-error";
+        const missing = yield* readOpenCodeUsage(
+          root,
+          0,
+          removed === "expired-read-error" ? 1001 : 0,
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readDirectory: (directory) =>
+              inventoryFails && directory === root
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "readDirectory",
+                      pathOrDescriptor: root,
+                    }),
+                  )
+                : fs.readDirectory(directory),
+          }),
+        );
+        assert.deepStrictEqual(missing.files.flatMap((entry) => entry.records), []);
+        assert.strictEqual(missing.error, removed === "table" || inventoryFails);
+
+        if (removed === "database") yield* fs.rename(path.join(root, "saved"), file);
+        if (removed === "root") yield* fs.rename(path.join(parent, "saved"), root);
+        if (removed === "table") {
+          yield* fs.writeFile(file, originalBytes);
+          const mtime = Option.getOrThrow(originalInfo.mtime);
+          yield* fs.utimes(file, mtime.getTime() / 1000, mtime.getTime() / 1000);
+        }
+        assert.deepStrictEqual(yield* fingerprint, originalFingerprint);
+        bodyReads = 0;
+        const restored = yield* readOpenCodeUsage(root, 0);
+        assert.strictEqual(restored.files[0]?.records[0]?.sessionId, "private-session");
+        // The restored file has the same fingerprint: a cold body read proves its old rows were evicted.
+        assert.strictEqual(bodyReads, removed === "read-error" ? 0 : 1);
+        assert.deepStrictEqual(yield* fs.readFile(file), originalBytes);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("bounds raw history allocations while counting every eligible message once", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

@@ -1,24 +1,32 @@
 import { RegistryContext } from "@effect/atom-react";
 import { EnvironmentId, UsageDay, type UsageSummaryInput } from "@t3tools/contracts";
-import { AtomRegistry } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 
-import { render } from "../../test/render";
+import { act, render } from "../../test/render";
 
 const requests = vi.hoisted(() => vi.fn());
 
 vi.mock(import("./presentation"), async () => {
   const { Atom } = await import("effect/reactivity");
+  const presentationsAtom = Atom.make(
+    new Map(
+      ["local", "remote"].map((id) => [
+        id,
+        {
+          entry: { target: { label: id } },
+          connection: { phase: "connected" },
+          serverConfig: { providers: [] },
+        },
+      ]),
+    ),
+  );
   return {
     environmentPresentations: {
-      presentationsAtom: Atom.make(
-        new Map(
-          ["local", "remote"].map((id) => [
-            id,
-            { entry: { target: { label: id } }, connection: { phase: "connected" } },
-          ]),
-        ),
-      ),
+      presentationsAtom,
+      presentationsWithProvidersAtom: presentationsAtom,
     },
   } as never;
 });
@@ -40,6 +48,7 @@ vi.mock(import("@t3tools/client-runtime/state/usage-access"), () => ({
 vi.mock(import("./server"), async () => {
   const { Atom, AsyncResult } = await import("effect/reactivity");
   return {
+    primaryServerKeybindingsAtom: Atom.make([]),
     serverEnvironment: {
       usageModelFilterAtom: Atom.family(() => Atom.make(undefined)),
       usageSummary: (input: unknown) => {
@@ -50,6 +59,41 @@ vi.mock(import("./server"), async () => {
   } as never;
 });
 
+vi.mock(import("./primaryEnvironment"), async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { localEnvironmentIdAtom: Atom.make<EnvironmentId | null>(null) } as never;
+});
+vi.mock(import("../hooks/useSettings"), () => ({ usePrimarySettings: () => false }) as never);
+vi.mock(import("./use-atom-command"), () =>
+  ({ useAtomCommand: () => async () => undefined }) as never,
+);
+vi.mock(import("../components/AppRouteModal"), () =>
+  ({
+    AppRouteModal: ({ children }: { children: ReactNode }) => children,
+    AppRouteModalClose: () => null,
+  }) as never,
+);
+vi.mock(import("../components/usage/UsageLimits"), () =>
+  ({ UsageLimitsSection: () => null }) as never,
+);
+vi.mock(import("../components/usage/UsagePriceOverrides"), () =>
+  ({ UsagePriceOverrides: () => null }) as never,
+);
+vi.mock(import("../components/usage/UsageModelDialog"), () =>
+  ({ UsageModelDialog: () => null, SpeedPremium: () => null }) as never,
+);
+vi.mock(import("../components/settings/ChatGptUsageButton"), () =>
+  ({ ChatGptUsageButton: () => null }) as never,
+);
+vi.mock(import("../components/usage/usagePagePreferences"), () =>
+  ({
+    readUsagePagePreferences: () => ({ metric: "limits", windowDays: 30 }),
+    saveUsagePagePreferences: () => undefined,
+  }) as never,
+);
+
+import { UsagePage } from "../components/usage/UsagePage";
+import { localEnvironmentIdAtom } from "./primaryEnvironment";
 import { useUsage } from "./usage";
 
 const input: UsageSummaryInput = {
@@ -85,8 +129,49 @@ describe("usage environment selection", () => {
         "local",
         "remote",
       ]);
+
+      requests.mockClear();
+      await screen.rerender(ui([]));
+      expect(requests).not.toHaveBeenCalled();
     } finally {
       registry.dispose();
     }
   });
+
+  it.each(["local", null])(
+    "starts the actual page with only its current environment (%s) and retains deselection",
+    async (initial) => {
+      requests.mockClear();
+      const registry = AtomRegistry.make();
+      if (!Atom.isWritable<EnvironmentId | null, EnvironmentId | null>(localEnvironmentIdAtom)) {
+        throw new Error("Fixture environment atom must be writable");
+      }
+      registry.set(localEnvironmentIdAtom, initial === null ? null : EnvironmentId.make(initial));
+      try {
+        await using screen = await render(
+          <RegistryContext.Provider value={registry}>
+            <UsagePage />
+          </RegistryContext.Provider>,
+        );
+        expect(requests.mock.calls.map(([request]) => request.environmentId)).toEqual(
+          initial === null ? [] : [initial],
+        );
+        if (initial !== null) {
+          await screen.getByRole("button", { name: initial, exact: true }).click();
+          await page.getByRole("menuitemcheckbox", { name: initial, exact: true }).click();
+        }
+        await expect
+          .element(screen.getByText("Select an environment to see limits."))
+          .toBeVisible();
+        requests.mockClear();
+        await act(() => registry.set(localEnvironmentIdAtom, EnvironmentId.make("remote")));
+        await expect
+          .element(screen.getByText("Select an environment to see limits."))
+          .toBeVisible();
+        expect(requests).not.toHaveBeenCalled();
+      } finally {
+        registry.dispose();
+      }
+    },
+  );
 });

@@ -36,6 +36,7 @@ import { usePrimarySettings } from "../../hooks/useSettings";
 import { resolveHour12 } from "../../timestampFormat";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentPresentations } from "../../state/presentation";
+import { localEnvironmentIdAtom } from "../../state/primaryEnvironment";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../../state/server";
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { isModelPickerOpen } from "../../modelPickerVisibility";
@@ -207,8 +208,11 @@ export function UsagePage() {
   const refreshingRef = useRef(false);
   const modalActionsRef = useRef<DialogPrimitive.Root.Actions | null>(null);
   const [priceDialog, setPriceDialog] = useState<{ readonly model?: string } | null>(null);
+  const localEnvironmentId = useAtomValue(localEnvironmentIdAtom);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
-    useState<ReadonlySet<EnvironmentId> | null>(null);
+    useState<ReadonlySet<EnvironmentId> | null>(() =>
+      new Set(localEnvironmentId === null ? [] : [localEnvironmentId]),
+    );
   const hiddenProviders = new Set(preferences.hiddenProviders);
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;

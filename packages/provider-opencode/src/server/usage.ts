@@ -153,6 +153,20 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
     records.push(record);
   };
 
+  const resolvedRoot = path.resolve(root);
+  // Retention still applies when a transient inventory error prevents reading the database.
+  for (const [key, cached] of rowCache) {
+    if (path.dirname(path.resolve(key.split("\0")[0]!)) !== resolvedRoot) continue;
+    for (const [rowId, entry] of cached.rows) {
+      const timestampMs = entry.record?.timestampMs ?? entry.created;
+      if (typeof timestampMs === "number" && timestampMs < retentionCutoffMs) {
+        cached.rows.delete(rowId);
+      }
+    }
+    if (cached.rows.size === 0) rowCache.delete(key);
+  }
+
+  let inventoriedDatabases = false;
   const databases = yield* fileSystem.readDirectory(root).pipe(
     Effect.flatMap((names) =>
       Effect.filter(
@@ -172,13 +186,29 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
         a === "opencode.db" ? -1 : b === "opencode.db" ? 1 : a.localeCompare(b),
       ),
     ),
+    Effect.tap(() =>
+      Effect.sync(() => {
+        inventoriedDatabases = true;
+      }),
+    ),
     Effect.catchTags({
       PlatformError: (cause) => {
-        if (!isNotFound(cause)) error = true;
+        if (isNotFound(cause)) inventoriedDatabases = true;
+        else error = true;
         return Effect.succeed([]);
       },
     }),
   );
+  // Only an authoritative inventory proves absence; read errors retain unexpired rows.
+  if (inventoriedDatabases) {
+    const present = new Set(databases.map((name) => path.resolve(root, name)));
+    for (const key of rowCache.keys()) {
+      const databasePath = path.resolve(key.split("\0")[0]!);
+      if (path.dirname(databasePath) === resolvedRoot && !present.has(databasePath)) {
+        rowCache.delete(key);
+      }
+    }
+  }
   for (const name of databases) {
     found = true;
     const file = { path: path.join(root, name), records: [] as UsageRecord[] };
@@ -208,6 +238,9 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
           "SELECT name FROM sqlite_master WHERE type = 'table'",
         )).map((row) => row.name),
       );
+      for (const table of ["message", "session_message"]) {
+        if (!tables.has(table)) rowCache.delete(`${file.path}\0${table}`);
+      }
       if (!tables.has("message") && !tables.has("session_message")) error = true;
       const columnsOf = (table: string) =>
         sql
