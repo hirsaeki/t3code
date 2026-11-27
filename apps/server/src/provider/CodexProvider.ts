@@ -208,7 +208,7 @@ function codexAccountAuthLabel(
   return usageLabel ?? codexPlanLabel(account.planType);
 }
 
-export function codexPlanLabel(planType: string | null | undefined): string | undefined {
+function codexPlanLabel(planType: string | null | undefined): string | undefined {
   switch (planType) {
     case "free":
       return "ChatGPT Free Subscription";

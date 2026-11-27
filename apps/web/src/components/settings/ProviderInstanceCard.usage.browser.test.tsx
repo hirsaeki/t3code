@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { render } from "../../../test/render";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import "~/index.css";
 
 const base: ProviderInstanceConfig = {
   driver: ProviderDriverKind.make("codex"),

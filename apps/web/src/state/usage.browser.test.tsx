@@ -3,7 +3,7 @@ import { EnvironmentId, UsageDay, type UsageSummaryInput } from "@t3tools/contra
 import { Atom, AtomRegistry } from "effect/reactivity";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../test/render";
 
@@ -139,7 +139,7 @@ describe("usage environment selection", () => {
   });
 
   it.each(["local", null])(
-    "starts the actual page with only its current environment (%s) and retains deselection",
+    "selects the current environment once available (%s) and retains explicit deselection",
     async (initial) => {
       requests.mockClear();
       const registry = AtomRegistry.make();
@@ -156,10 +156,18 @@ describe("usage environment selection", () => {
         expect(requests.mock.calls.map(([request]) => request.environmentId)).toEqual(
           initial === null ? [] : [initial],
         );
-        if (initial !== null) {
-          await screen.getByRole("button", { name: initial, exact: true }).click();
-          await page.getByRole("menuitemcheckbox", { name: initial, exact: true }).click();
+        if (initial === null) {
+          await expect
+            .element(screen.getByText("Select an environment to see limits."))
+            .toBeVisible();
+          await act(() => registry.set(localEnvironmentIdAtom, EnvironmentId.make("local")));
         }
+        await expect
+          .element(screen.getByRole("button", { name: "local", exact: true }))
+          .toBeVisible();
+        expect(requests.mock.calls.map(([request]) => request.environmentId)).toEqual(["local"]);
+        await screen.getByRole("button", { name: "local", exact: true }).click();
+        await page.getByRole("menuitemcheckbox", { name: "local", exact: true }).click();
         await expect
           .element(screen.getByText("Select an environment to see limits."))
           .toBeVisible();
@@ -169,6 +177,60 @@ describe("usage environment selection", () => {
           .element(screen.getByText("Select an environment to see limits."))
           .toBeVisible();
         expect(requests).not.toHaveBeenCalled();
+      } finally {
+        registry.dispose();
+      }
+    },
+  );
+
+  it.each(["none", "all"])(
+    "preserves an explicit %s selection while the current environment resolves",
+    async (selection) => {
+      requests.mockClear();
+      const registry = AtomRegistry.make();
+      if (!Atom.isWritable<EnvironmentId | null, EnvironmentId | null>(localEnvironmentIdAtom)) {
+        throw new Error("Fixture environment atom must be writable");
+      }
+      registry.set(localEnvironmentIdAtom, null);
+      try {
+        await using screen = await render(
+          <RegistryContext.Provider value={registry}>
+            <UsagePage />
+          </RegistryContext.Provider>,
+        );
+        expect(requests).not.toHaveBeenCalled();
+        await screen.getByRole("button", { name: "0 environments", exact: true }).click();
+        const all = page.getByRole("menuitemcheckbox", { name: "All environments", exact: true });
+        await all.click();
+        await expect.element(all).toHaveAttribute("aria-checked", "true");
+        expect(requests.mock.calls.map(([request]) => request.environmentId)).toEqual([
+          "local",
+          "remote",
+        ]);
+        if (selection === "none") {
+          await all.click();
+          await expect.element(all).toHaveAttribute("aria-checked", "false");
+          await expect
+            .element(screen.getByText("Select an environment to see limits."))
+            .toBeVisible();
+          requests.mockClear();
+        }
+        await userEvent.keyboard("{Escape}");
+        await act(() => registry.set(localEnvironmentIdAtom, EnvironmentId.make("local")));
+        const trigger = screen.getByRole("button", {
+          name: selection === "all" ? "All environments" : "0 environments",
+          exact: true,
+        });
+        await expect.element(trigger).toBeVisible();
+        expect(requests.mock.calls.map(([request]) => request.environmentId)).toEqual(
+          selection === "all" ? ["local", "remote"] : [],
+        );
+        await trigger.click();
+        for (const name of ["All environments", "local", "remote"]) {
+          await expect
+            .element(page.getByRole("menuitemcheckbox", { name, exact: true }))
+            .toHaveAttribute("aria-checked", selection === "all" ? "true" : "false");
+        }
       } finally {
         registry.dispose();
       }

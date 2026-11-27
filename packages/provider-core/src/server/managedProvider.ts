@@ -220,9 +220,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     // A probe without usage must not erase a report published while its I/O was in flight.
     const usageBeforeProbe = (yield* Ref.get(snapshotStateRef)).snapshot.usageLimits;
     const probeAccountGeneration = accountGeneration;
-    const requestedAccountSettings = JSON.stringify(
-      (yield* host.settings.get).providerInstances[initialSnapshot.instanceId],
-    );
+    const requestedAccountSettings = (yield* host.settings.get).providerInstances[
+      initialSnapshot.instanceId
+    ];
     const probedSnapshot = yield* input.checkProvider.pipe(
       Effect.provideService(DeferringFailedCheck, options?.deferFailure === true),
     );
@@ -244,8 +244,10 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           const allowAccountUsage =
             isProviderAccountUsageEnabled(current, probedSnapshot.instanceId) &&
             probeAccountGeneration === accountGeneration &&
-            requestedAccountSettings ===
-              JSON.stringify(current.providerInstances[probedSnapshot.instanceId]);
+            Equal.equals(
+              requestedAccountSettings,
+              current.providerInstances[probedSnapshot.instanceId],
+            );
           const result = yield* Ref.modify(snapshotStateRef, (state) => {
             const generation = input.enrichSnapshot
               ? state.enrichmentGeneration + 1
@@ -425,17 +427,14 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return;
     }
     const probeAccountGeneration = accountGeneration;
-    const requestedAccountSettings = JSON.stringify(
-      (yield* host.settings.get).providerInstances[snapshot.instanceId],
-    );
+    const requestedAccountSettings = (yield* host.settings.get).providerInstances[snapshot.instanceId];
     const probed = yield* input.checkUsageLimits;
     yield* host.settings.withSnapshot((current) =>
       Effect.gen(function* () {
         if (
           probeAccountGeneration !== accountGeneration ||
           !isProviderAccountUsageEnabled(current, snapshot.instanceId) ||
-          requestedAccountSettings !==
-            JSON.stringify(current.providerInstances[snapshot.instanceId])
+          !Equal.equals(requestedAccountSettings, current.providerInstances[snapshot.instanceId])
         )
           return;
         const next = yield* Ref.modify(snapshotStateRef, (state) => {
@@ -480,15 +479,13 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
           Effect.orElseSucceed(() => DEFAULT_PROVIDER_HEALTH_REFRESH_INTERVAL),
         );
 
-  let accountSettingsKey = JSON.stringify(
-    initialAccountSettings.providerInstances[initialSnapshot.instanceId],
-  );
+  let accountSettings = initialAccountSettings.providerInstances[initialSnapshot.instanceId];
   yield* accountSettingsChanges.pipe(
     Stream.runForEach((settings) =>
       Effect.gen(function* () {
-        const key = JSON.stringify(settings.providerInstances[initialSnapshot.instanceId]);
-        if (key === accountSettingsKey) return;
-        accountSettingsKey = key;
+        const nextAccountSettings = settings.providerInstances[initialSnapshot.instanceId];
+        if (Equal.equals(accountSettings, nextAccountSettings)) return;
+        accountSettings = nextAccountSettings;
         accountGeneration += 1;
         yield* input.invalidateUsageCache ?? Effect.void;
         const snapshot = yield* Ref.modify(snapshotStateRef, (state) => {

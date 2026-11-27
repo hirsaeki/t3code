@@ -26,6 +26,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -623,6 +624,8 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       const claudeId = ProviderInstanceId.make("claude_probe_recovery");
       const settings = yield* ServerSettings.ServerSettingsService;
       yield* settings.updateSettings({
+        // Expire the probe cache without a periodic check consuming its one-use fallback.
+        providerHealthRefreshInterval: Duration.zero,
         providerInstances: {
           [claudeId]: {
             driver: ProviderDriverKind.make("claudeAgent"),

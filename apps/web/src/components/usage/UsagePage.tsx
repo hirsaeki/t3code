@@ -209,10 +209,12 @@ export function UsagePage() {
   const modalActionsRef = useRef<DialogPrimitive.Root.Actions | null>(null);
   const [priceDialog, setPriceDialog] = useState<{ readonly model?: string } | null>(null);
   const localEnvironmentId = useAtomValue(localEnvironmentIdAtom);
-  const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
-    useState<ReadonlySet<EnvironmentId> | null>(() =>
-      new Set(localEnvironmentId === null ? [] : [localEnvironmentId]),
-    );
+  const [chosenEnvironmentIds, setChosenEnvironmentIds] =
+    useState<ReadonlySet<EnvironmentId> | null>();
+  const selectedEnvironmentIds =
+    chosenEnvironmentIds === undefined
+      ? new Set(localEnvironmentId === null ? [] : [localEnvironmentId])
+      : chosenEnvironmentIds;
   const hiddenProviders = new Set(preferences.hiddenProviders);
   const { days: windowDays, window } = windowSelection;
   const isPast24Hours = windowDays === 1;
@@ -395,7 +397,7 @@ export function UsagePage() {
             environments={environments}
             selectedEnvironments={selectedEnvironments}
             selectedEnvironmentIds={selectedEnvironmentIds}
-            onSelectionChange={setSelectedEnvironmentIds}
+            onSelectionChange={setChosenEnvironmentIds}
             showUsageStatus={!showingLimits}
             refreshing={refreshingUsage}
             isPartial={isPartial}

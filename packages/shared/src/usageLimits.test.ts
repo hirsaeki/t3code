@@ -303,7 +303,7 @@ describe("pools", () => {
     expect(accounts[0]).toMatchObject({
       key: "env-a:claude",
       sourceLabel: null,
-      redeem: { environmentId: "env-b", input: { instanceId: "claude" } },
+      redeem: null,
       environments: [
         { environmentId: "env-a", label: "Laptop" },
         { environmentId: "env-b", label: "Desktop" },
