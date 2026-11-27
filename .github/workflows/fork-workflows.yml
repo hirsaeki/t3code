@@ -1,0 +1,183 @@
+name: fork-workflows
+
+# Install as .github/workflows/fork-workflows.yml on the default branch.
+# Open an issue as the personal repository owner:
+#   [workflow-status]           (no body required)
+#   [configure-fork-workflows]   (raw JSON body, e.g.)
+#     {"enable":["ci.yml"],"disable":["release.yml"]}
+# Only listed workflows are changed. An empty array is allowed.
+# A successful result comment is posted before closing the request issue.
+# On failure the issue stays open. Do not rerun a closed request.
+# Bootstrap: Actions and this workflow must already be enabled.
+
+on:
+  issues:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  status:
+    if: >-
+      github.event.issue.user.login == github.repository_owner &&
+      github.event.sender.login == github.repository_owner &&
+      github.triggering_actor == github.repository_owner &&
+      github.event.issue.title == '[workflow-status]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      issues: write
+    concurrency: &management_queue
+      group: fork-workflows-management
+      queue: max
+      cancel-in-progress: false
+    steps: &management_steps
+      - name: Manage workflows and report result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          with open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8') as f:
+              issue = json.load(f)['issue']
+          number = issue['number']
+          issue_api = f'repos/{repo}/issues/{number}'
+          workflows_api = f'repos/{repo}/actions/workflows'
+          operation = issue['title'].lower()
+          self_path = os.environ['GITHUB_WORKFLOW_REF'].split('@refs/', 1)[0].removeprefix(repo + '/')
+
+          def api(method, endpoint, payload=None, paginate=False):
+              args = ['gh', 'api', '--method', method, endpoint]
+              if paginate:
+                  args += ['--paginate', '--slurp']
+              if payload is not None:
+                  args += ['--input', '-']
+              result = subprocess.run(
+                  args, input=None if payload is None else json.dumps(payload),
+                  text=True, encoding='utf-8', capture_output=True,
+              )
+              if result.returncode:
+                  print(result.stderr, file=sys.stderr)
+                  raise RuntimeError(f'GitHub API failed: {method} {endpoint}')
+              return json.loads(result.stdout) if result.stdout.strip() else None
+
+          def list_workflows():
+              pages = api('GET', workflows_api + '?per_page=100', paginate=True)
+              return sorted(
+                  ({k: w[k] for k in ('id', 'name', 'path', 'state')}
+                   for page in pages for w in page['workflows']),
+                  key=lambda w: w['path'],
+              )
+
+          def unique_object(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError(f'Duplicate JSON key: {key}')
+                  result[key] = value
+              return result
+
+          def plan(body, workflows):
+              policy = json.loads(body or '', object_pairs_hook=unique_object)
+              if not isinstance(policy, dict) or set(policy) != {'enable', 'disable'}:
+                  raise ValueError('Expected a JSON object with enable and disable arrays')
+              by_path = {w['path']: w for w in workflows}
+              selected = set()
+              targets = []
+              for action, desired in [('enable', 'active'), ('disable', 'disabled_manually')]:
+                  names = policy[action]
+                  if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+                      raise ValueError(f'{action} must be an array of workflow file names')
+                  for name in names:
+                      if not name.endswith(('.yml', '.yaml')) or '/' in name or '\\' in name:
+                          raise ValueError(f'Invalid workflow file name: {name!r}')
+                      path = '.github/workflows/' + name
+                      if path == self_path and action == 'disable':
+                          raise ValueError('Cannot disable the management workflow')
+                      if path in selected:
+                          raise ValueError(f'Duplicate or conflicting target: {name}')
+                      if path not in by_path:
+                          raise ValueError(f'Unknown workflow: {name}')
+                      selected.add(path)
+                      w = by_path[path]
+                      targets.append({'id': w['id'], 'path': path, 'before': w['state'],
+                                      'desired': desired, 'action': action})
+              return targets
+
+          # Request identity is the original issue-opened event, not edited text.
+          current = api('GET', issue_api)
+          if current['state'] != 'open':
+              print('Request issue is no longer open; no operation performed.')
+              sys.exit(0)
+
+          report = {
+              'schema': 'fork-workflows-result/v1',
+              'repository': repo, 'trigger_issue': number,
+              'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
+              'operation': operation, 'status': 'failure',
+              'targets': [], 'changes': [], 'workflows': None,
+              'error': None,
+          }
+          try:
+              if current['title'] != issue['title'] or (
+                  operation == '[configure-fork-workflows]' and current['body'] != issue['body']
+              ):
+                  raise ValueError('Request was edited; open a new issue instead')
+              report['workflows'] = list_workflows()
+              if operation == '[configure-fork-workflows]':
+                  # Validate every target before making any changes.
+                  report['targets'] = plan(issue['body'], report['workflows'])
+                  for target in report['targets']:
+                      if target['before'] == target['desired']:
+                          continue
+                      api('PUT', f"{workflows_api}/{target['id']}/{target['action']}")
+                      report['changes'].append(target['path'])
+                  report['workflows'] = None  # Never present a stale snapshot as final.
+                  report['workflows'] = list_workflows()
+                  observed = {w['id']: (w['path'], w['state']) for w in report['workflows']}
+                  for target in report['targets']:
+                      if observed.get(target['id']) != (target['path'], target['desired']):
+                          raise RuntimeError(f"State verification failed: {target['path']}")
+              elif operation != '[workflow-status]':
+                  raise ValueError('Unsupported operation')
+              report['status'] = 'success'
+          except Exception as exc:
+              report['error'] = str(exc)
+              # A multi-workflow update is not atomic. Read back even after failure.
+              report['workflows'] = None
+              try:
+                  report['workflows'] = list_workflows()
+              except Exception as read_error:
+                  report['error'] += f'; final status unavailable: {read_error}'
+
+          body = ('<!-- fork-workflows-result:v1 -->\n\n'
+                  + f"Workflow management: {report['status']}\n\n"
+                  + '```json\n' + json.dumps(report, indent=2, ensure_ascii=True) + '\n```')
+          api('POST', issue_api + '/comments', {'body': body})
+          if report['status'] != 'success':
+              print(report['error'], file=sys.stderr)
+              sys.exit(1)
+          api('PATCH', issue_api, {'state': 'closed', 'state_reason': 'completed'})
+          PY
+
+  configure:
+    if: >-
+      github.event.issue.user.login == github.repository_owner &&
+      github.event.sender.login == github.repository_owner &&
+      github.triggering_actor == github.repository_owner &&
+      github.event.issue.title == '[configure-fork-workflows]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      issues: write
+    concurrency: *management_queue
+    steps: *management_steps
