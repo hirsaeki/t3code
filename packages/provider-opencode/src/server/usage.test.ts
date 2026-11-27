@@ -31,11 +31,7 @@ import {
   openCodeForkSourceAssistantId,
   openCodeForkSourceSessionId,
 } from "./usage.fixture.ts";
-import {
-  clearOpenCodeUsageCache,
-  openCodeUsageReader,
-  readOpenCodeUsage,
-} from "./usage.ts";
+import { clearOpenCodeUsageCache, openCodeUsageReader, readOpenCodeUsage } from "./usage.ts";
 
 const readerWorkers = vi.hoisted(() => ({ started: 0, enabled: false }));
 
@@ -131,13 +127,16 @@ describe("readOpenCodeUsage", () => {
             yield* db.unsafe(
               "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)",
             );
-            yield* db.unsafe("INSERT INTO message VALUES ('original', 'private-session', ?, 1000)", [
-              JSON.stringify({
-                modelID: "private-model",
-                time: { created: 1000 },
-                tokens: { output: 5 },
-              }),
-            ]);
+            yield* db.unsafe(
+              "INSERT INTO message VALUES ('original', 'private-session', ?, 1000)",
+              [
+                JSON.stringify({
+                  modelID: "private-model",
+                  time: { created: 1000 },
+                  tokens: { output: 5 },
+                }),
+              ],
+            );
           }),
         );
         const originalBytes = yield* fs.readFile(file);

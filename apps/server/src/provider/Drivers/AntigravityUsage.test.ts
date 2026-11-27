@@ -23,9 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as AntigravityUsage from "./AntigravityUsage.ts";
 
-const setup = Effect.fn("AntigravityUsage.test.setup")(function* (
-  stage: "roots" | "history",
-) {
+const setup = Effect.fn("AntigravityUsage.test.setup")(function* (stage: "roots" | "history") {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const host = yield* ProviderHost.ProviderHost;

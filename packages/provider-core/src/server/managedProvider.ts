@@ -220,9 +220,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     // A probe without usage must not erase a report published while its I/O was in flight.
     const usageBeforeProbe = (yield* Ref.get(snapshotStateRef)).snapshot.usageLimits;
     const probeAccountGeneration = accountGeneration;
-    const requestedAccountSettings = (yield* host.settings.get).providerInstances[
-      initialSnapshot.instanceId
-    ];
+    const requestedAccountSettings =
+      (yield* host.settings.get).providerInstances[initialSnapshot.instanceId];
     const probedSnapshot = yield* input.checkProvider.pipe(
       Effect.provideService(DeferringFailedCheck, options?.deferFailure === true),
     );
@@ -427,7 +426,8 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
       return;
     }
     const probeAccountGeneration = accountGeneration;
-    const requestedAccountSettings = (yield* host.settings.get).providerInstances[snapshot.instanceId];
+    const requestedAccountSettings =
+      (yield* host.settings.get).providerInstances[snapshot.instanceId];
     const probed = yield* input.checkUsageLimits;
     yield* host.settings.withSnapshot((current) =>
       Effect.gen(function* () {

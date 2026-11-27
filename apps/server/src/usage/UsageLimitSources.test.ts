@@ -327,7 +327,7 @@ it.effect("keeps hub quota unavailable without making upstream account requests"
 });
 
 it.effect.each([
-  { enabled: true, accountUsageEnabled: undefined },
+  { enabled: true },
   { enabled: true, accountUsageEnabled: false },
   { enabled: false, accountUsageEnabled: true },
 ])("does not resolve credentials or request unselected or disabled quota sources: %j", (flags) =>

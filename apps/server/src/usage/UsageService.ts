@@ -1167,7 +1167,7 @@ export const make = Effect.gen(function* () {
     const modelAliases = resolveModelAliases(settings.usageModelAliases);
     const sources: UsageSource[] = [];
 
-    // Deleted transcripts' saved usage still aggregates and deduplicates normally.
+    // Saved usage supports provisional and incomplete scans.
     // Saved paths are files below a scanned root, so their folder decides; folders repeat thousands of times.
     const withinDir = (dir: string) => {
       const foldersWithin = new Map<string, boolean>();

@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
@@ -27,7 +28,17 @@ vi.mock("./sdk.ts", { spy: true });
 
 const layerTest = TestProviderHost.layer({
   runBackgroundWork: false,
-  settings: { ...DEFAULT_SERVER_SETTINGS, enableProviderUpdateChecks: false },
+  settings: {
+    ...DEFAULT_SERVER_SETTINGS,
+    enableProviderUpdateChecks: false,
+    providerInstances: {
+      [ProviderInstanceId.make("muse-test")]: {
+        driver: ProviderDriverKind.make("muse"),
+        enabled: true,
+        accountUsageEnabled: true,
+      },
+    },
+  },
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(IdAllocator.layer),

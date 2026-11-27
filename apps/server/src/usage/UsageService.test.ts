@@ -1261,13 +1261,19 @@ describe("UsageService", () => {
         });
         const removed = yield* UsageService.make;
         const retained = yield* removed.readSummary(WINDOW);
-        assert.deepStrictEqual(retained.buckets, rewritten.buckets);
+        assert.deepStrictEqual(retained.buckets, first.buckets);
         assert.strictEqual(
           retained.sources.find((source) => source.fingerprint.provider === "codex")
             ?.malformedRecords,
           0,
         );
         yield* removed.awaitPersisted;
+        yield* Effect.promise(async () => {
+          const document = decodeUnknownJsonString(await NodeFSP.readFile(cachePath, "utf8")) as {
+            files: Record<string, unknown>;
+          };
+          assert.strictEqual(document.files[originalPath + ".zst"], undefined);
+        });
       }).pipe(
         Effect.scoped,
         Effect.provide(layerService({ prefix: "usage-compressed-codex", home, settings })),
@@ -2935,7 +2941,11 @@ describe("UsageService", () => {
         const second = yield* service.readSummary({ ...WINDOW, awaitRefresh: true });
         assert.deepStrictEqual(
           cursorSources(second).map((source) => source.status),
-          ["ok"],
+          ["ok", "missing"],
+        );
+        assert.deepStrictEqual(
+          cursorSources(second).map((source) => source.distinctSessions),
+          [1, 0],
         );
         assert.strictEqual(totalOutputTokens(second), 12);
       }).pipe(
@@ -3608,6 +3618,11 @@ describe("UsageService", () => {
                     enabled: true,
                     config: {},
                   },
+                  [ProviderInstanceId.make("grok")]: {
+                    driver: ProviderDriverKind.make("grok"),
+                    usageHistoryEnabled: true,
+                    enabled: true,
+                  },
                 },
               },
             }),
@@ -3661,6 +3676,12 @@ describe("UsageService", () => {
     () =>
       Effect.gen(function* () {
         const { transcript, settings, home } = yield* setup;
+        const claudeSettings = {
+          providerInstances: {
+            [ProviderInstanceId.make("claudeAgent")]:
+              settings.providerInstances[ProviderInstanceId.make("claudeAgent")]!,
+          },
+        };
         yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
         const provisional = { ...WINDOW, provisional: true };
         const claude = (summary: UsageSummary) =>
@@ -3720,7 +3741,13 @@ describe("UsageService", () => {
           assert.isUndefined(claude(yield* reloaded.readSummary(provisional))?.refreshing);
         }).pipe(
           Effect.scoped,
-          Effect.provide(layerService({ prefix: "usage-service-provisional", home, settings })),
+          Effect.provide(
+            layerService({
+              prefix: "usage-service-provisional",
+              home,
+              settings: claudeSettings,
+            }),
+          ),
         );
       }),
   );
@@ -4660,6 +4687,12 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse("2026-08-15T00:00:00Z"));
       const { transcript, settings, home } = yield* setup;
+      const claudeSettings = {
+        providerInstances: {
+          [ProviderInstanceId.make("claudeAgent")]:
+            settings.providerInstances[ProviderInstanceId.make("claudeAgent")]!,
+        },
+      };
       const dir = NodePath.dirname(transcript);
       const [first = "", second = ""] = yield* Effect.promise(async () => {
         await NodeFSP.writeFile(NodePath.join(dir, "a.jsonl"), "");
@@ -4683,7 +4716,13 @@ describe("UsageService", () => {
         assert.isTrue(saved.sources.some((source) => source.refreshing === true));
         assert.deepStrictEqual(saved.buckets, exact.buckets);
       }).pipe(
-        Effect.provide(layerService({ prefix: "usage-service-saved-order-test", home, settings })),
+        Effect.provide(
+          layerService({
+            prefix: "usage-service-saved-order-test",
+            home,
+            settings: claudeSettings,
+          }),
+        ),
       );
 
       // A narrow scan that first saves the earlier copy still puts it before a later file it skipped.
@@ -4709,7 +4748,13 @@ describe("UsageService", () => {
         const exact = yield* service.readSummary(WINDOW);
         assert.deepStrictEqual(saved.buckets, exact.buckets);
       }).pipe(
-        Effect.provide(layerService({ prefix: "usage-service-narrow-order-test", home, settings })),
+        Effect.provide(
+          layerService({
+            prefix: "usage-service-narrow-order-test",
+            home,
+            settings: claudeSettings,
+          }),
+        ),
       );
     }),
   );

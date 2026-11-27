@@ -1040,7 +1040,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
   );
 
   it.effect.each([
-    { enabled: true, accountUsageEnabled: undefined },
+    { enabled: true },
     { enabled: true, accountUsageEnabled: false },
     { enabled: false, accountUsageEnabled: true },
   ])("does not request account usage before opt-in or while disabled: %j", (flags) =>

@@ -64,32 +64,41 @@ vi.mock(import("./primaryEnvironment"), async () => {
   return { localEnvironmentIdAtom: Atom.make<EnvironmentId | null>(null) } as never;
 });
 vi.mock(import("../hooks/useSettings"), () => ({ usePrimarySettings: () => false }) as never);
-vi.mock(import("./use-atom-command"), () =>
-  ({ useAtomCommand: () => async () => undefined }) as never,
+vi.mock(
+  import("./use-atom-command"),
+  () => ({ useAtomCommand: () => async () => undefined }) as never,
 );
-vi.mock(import("../components/AppRouteModal"), () =>
-  ({
-    AppRouteModal: ({ children }: { children: ReactNode }) => children,
-    AppRouteModalClose: () => null,
-  }) as never,
+vi.mock(
+  import("../components/AppRouteModal"),
+  () =>
+    ({
+      AppRouteModal: ({ children }: { children: ReactNode }) => children,
+      AppRouteModalClose: () => null,
+    }) as never,
 );
-vi.mock(import("../components/usage/UsageLimits"), () =>
-  ({ UsageLimitsSection: () => null }) as never,
+vi.mock(
+  import("../components/usage/UsageLimits"),
+  () => ({ UsageLimitsSection: () => null }) as never,
 );
-vi.mock(import("../components/usage/UsagePriceOverrides"), () =>
-  ({ UsagePriceOverrides: () => null }) as never,
+vi.mock(
+  import("../components/usage/UsagePriceOverrides"),
+  () => ({ UsagePriceOverrides: () => null }) as never,
 );
-vi.mock(import("../components/usage/UsageModelDialog"), () =>
-  ({ UsageModelDialog: () => null, SpeedPremium: () => null }) as never,
+vi.mock(
+  import("../components/usage/UsageModelDialog"),
+  () => ({ UsageModelDialog: () => null, SpeedPremium: () => null }) as never,
 );
-vi.mock(import("../components/settings/ChatGptUsageButton"), () =>
-  ({ ChatGptUsageButton: () => null }) as never,
+vi.mock(
+  import("../components/settings/ChatGptUsageButton"),
+  () => ({ ChatGptUsageButton: () => null }) as never,
 );
-vi.mock(import("../components/usage/usagePagePreferences"), () =>
-  ({
-    readUsagePagePreferences: () => ({ metric: "limits", windowDays: 30 }),
-    saveUsagePagePreferences: () => undefined,
-  }) as never,
+vi.mock(
+  import("../components/usage/usagePagePreferences"),
+  () =>
+    ({
+      readUsagePagePreferences: () => ({ metric: "limits", windowDays: 30 }),
+      saveUsagePagePreferences: () => undefined,
+    }) as never,
 );
 
 import { UsagePage } from "../components/usage/UsagePage";

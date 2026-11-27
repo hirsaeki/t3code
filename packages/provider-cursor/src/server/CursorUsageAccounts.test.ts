@@ -39,9 +39,7 @@ it.effect("purges an intermediate revocation and discards the refresh started be
           driver: ProviderDriverKind.make("cursor"),
           enabled: true,
           accountUsageEnabled: true,
-          environment: [
-            { name: "CURSOR_API_KEY", value: "synthetic-api-key", sensitive: true },
-          ],
+          environment: [{ name: "CURSOR_API_KEY", value: "synthetic-api-key", sensitive: true }],
         },
       },
     };
