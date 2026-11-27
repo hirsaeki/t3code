@@ -464,7 +464,7 @@ const make = Effect.gen(function* () {
   yield* reconcileCredentials();
   yield* persist;
   yield* settingsChanges.pipe(
-    Stream.runForEach(() => persist),
+    Stream.runForEach((settings) => reconcileCredentials(settings).pipe(Effect.andThen(persist))),
     Effect.forkScoped,
   );
 

@@ -34,8 +34,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Scheduler from "effect/Scheduler";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
@@ -761,6 +763,220 @@ describe("UsageService", () => {
               prefix: "usage-scan-revoke",
               home,
               settings: { ...settings, usageHistoryRetentionDays: "unlimited" },
+            }),
+          ),
+        );
+      }),
+  );
+
+  it.effect.each(["source selection", "retention"] as const)(
+    "applies a queued OpenCode %s change before the latest reselected settings",
+    (changed) =>
+      Effect.gen(function* () {
+        const { home } = yield* setup;
+        yield* TestClock.setTime(Date.parse("2026-08-10T00:00:00Z"));
+        const root = NodePath.join(home, "opencode");
+        const directory = NodePath.join(root, "storage", "message", "private-session");
+        const file = NodePath.join(directory, "message.json");
+        const content = JSON.stringify({
+          role: "assistant",
+          modelID: "private-model",
+          time: { created: Date.parse("2026-08-01T10:00:00Z") },
+          tokens: { output: 5 },
+        });
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(directory, { recursive: true });
+          await NodeFSP.writeFile(file, content);
+        });
+        const instanceId = ProviderInstanceId.make("opencode");
+        yield* Effect.gen(function* () {
+          const config = yield* ServerSettings.ServerSettingsService;
+          const fs = yield* FileSystem.FileSystem;
+          const selected = yield* config.getSettings;
+          const updates = yield* Queue.unbounded<{
+            readonly settings: typeof selected;
+            readonly applied: Deferred.Deferred<void>;
+          }>();
+          const changes = Stream.fromQueue(updates).pipe(
+            Stream.flatMap(({ settings, applied }) =>
+              Stream.make(settings).pipe(
+                Stream.concat(Stream.fromEffectDrain(Deferred.succeed(applied, undefined))),
+              ),
+            ),
+          );
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          let paused = false;
+          const service = yield* UsageService.make.pipe(
+            Effect.provideService(ServerSettings.ServerSettingsService, {
+              ...config,
+              subscribeChanges: Effect.succeed(changes),
+            }),
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              realPath: (target) =>
+                Effect.suspend(() => {
+                  if (target !== root || paused) return fs.realPath(target);
+                  paused = true;
+                  return Deferred.succeed(started, undefined).pipe(
+                    Effect.andThen(Deferred.await(release)),
+                    Effect.andThen(fs.realPath(target)),
+                  );
+                }),
+            }),
+          );
+          const pending = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+          yield* Deferred.await(started);
+          const revoked = yield* config.updateSettings(
+            changed === "retention"
+              ? { usageHistoryRetentionDays: 1 }
+              : {
+                  providerInstances: {
+                    ...selected.providerInstances,
+                    [instanceId]: {
+                      ...selected.providerInstances[instanceId]!,
+                      usageHistoryEnabled: false,
+                    },
+                  },
+                },
+          );
+          const reselected = yield* config.updateSettings({
+            providerInstances: selected.providerInstances,
+            usageHistoryRetentionDays: selected.usageHistoryRetentionDays,
+          });
+          // Deliver the intermediate revocation only after the current snapshot is selected again.
+          for (const settings of [revoked, reselected]) {
+            const applied = yield* Deferred.make<void>();
+            yield* Queue.offer(updates, { settings, applied });
+            yield* Deferred.await(applied);
+          }
+          const fresh = yield* service
+            .readSummary(WINDOW)
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Deferred.succeed(release, undefined);
+          assert.isTrue(Exit.isFailure(yield* Fiber.await(pending)));
+          assert.strictEqual(totalOutputTokens(yield* Fiber.join(fresh)), 5);
+          assert.strictEqual(yield* fs.readFileString(file), content);
+        }).pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-opencode-reselected",
+              home,
+              settings: {
+                usageHistoryRetentionDays: "unlimited",
+                providerInstances: {
+                  [instanceId]: {
+                    driver: ProviderDriverKind.make("opencode"),
+                    enabled: true,
+                    usageHistoryEnabled: true,
+                  },
+                },
+              },
+            }),
+          ),
+        );
+      }),
+  );
+
+  it.effect.each(["source selection", "retention"] as const)(
+    "an append read cannot restore purged transcript records after %s changes are reverted",
+    (changed) =>
+      Effect.gen(function* () {
+        const { home, transcript, settings } = yield* setup;
+        const first = claudeLine(1, 5, "private-model", "private-session");
+        const appended = claudeLine(2, 7, "appended-model", "appended-session");
+        yield* TestClock.setTime(Date.parse("2026-08-10T00:00:00Z"));
+        yield* Effect.promise(() => NodeFSP.writeFile(transcript, first));
+        yield* Effect.gen(function* () {
+          const config = yield* ServerSettings.ServerSettingsService;
+          const fs = yield* FileSystem.FileSystem;
+          const { stateDir } = yield* ServerConfig.ServerConfig;
+          const selected = yield* config.getSettings;
+          const updates = yield* Queue.unbounded<{
+            readonly settings: typeof selected;
+            readonly applied: Deferred.Deferred<void>;
+          }>();
+          const changes = Stream.fromQueue(updates).pipe(
+            Stream.flatMap(({ settings, applied }) =>
+              Stream.make(settings).pipe(
+                Stream.concat(Stream.fromEffectDrain(Deferred.succeed(applied, undefined))),
+              ),
+            ),
+          );
+          const service = yield* UsageService.make.pipe(
+            Effect.provideService(ServerSettings.ServerSettingsService, {
+              ...config,
+              subscribeChanges: Effect.succeed(changes),
+            }),
+          );
+          assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 5);
+          yield* service.awaitPersisted;
+          yield* Effect.promise(() => NodeFSP.appendFile(transcript, appended));
+
+          const started = yield* Deferred.make<void>();
+          const release = Promise.withResolvers<void>();
+          yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
+          const native = yield* Effect.promise(() =>
+            vi.importActual<typeof NodeFSP>("node:fs/promises"),
+          );
+          let paused = false;
+          using _open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+            if (args[0] === transcript && !paused) {
+              paused = true;
+              // readFileRecords has captured the previous cache entry before opening its append.
+              Deferred.doneUnsafe(started, Effect.void);
+              await release.promise;
+            }
+            return native.open(...args);
+          });
+          const pending = yield* service.readSummary(WINDOW).pipe(Effect.forkChild);
+          yield* Deferred.await(started);
+          const revoked = yield* config.updateSettings(
+            changed === "retention"
+              ? { usageHistoryRetentionDays: 1 }
+              : {
+                  providerInstances: {
+                    ...selected.providerInstances,
+                    [ProviderInstanceId.make("claudeAgent")]: {
+                      ...selected.providerInstances[ProviderInstanceId.make("claudeAgent")]!,
+                      usageHistoryEnabled: false,
+                    },
+                  },
+                },
+          );
+          const reselected = yield* config.updateSettings({
+            providerInstances: selected.providerInstances,
+            usageHistoryRetentionDays: selected.usageHistoryRetentionDays,
+          });
+          for (const settings of [revoked, reselected]) {
+            const applied = yield* Deferred.make<void>();
+            yield* Queue.offer(updates, { settings, applied });
+            yield* Deferred.await(applied);
+          }
+          release.resolve();
+          assert.isTrue(Exit.isFailure(yield* Fiber.await(pending)));
+          yield* service.awaitPersisted;
+          const cachePath = NodePath.join(stateDir, SCAN_CACHE_FILE_NAME);
+          if (yield* fs.exists(cachePath)) {
+            const saved = yield* fs.readFileString(cachePath);
+            assert.notInclude(saved, "private-session");
+            assert.notInclude(saved, "private-model");
+            assert.notInclude(saved, "appended-session");
+          }
+          assert.strictEqual(totalOutputTokens(yield* service.readSummary(WINDOW)), 12);
+          assert.strictEqual(yield* fs.readFileString(transcript), first + appended);
+        }).pipe(
+          Effect.provide(
+            layerService({
+              prefix: "usage-transcript-reselected",
+              home,
+              settings: {
+                usageHistoryRetentionDays: "unlimited",
+                providerInstances: {
+                  [ProviderInstanceId.make("claudeAgent")]:
+                    settings.providerInstances[ProviderInstanceId.make("claudeAgent")]!,
+                },
+              },
             }),
           ),
         );
@@ -4369,7 +4585,7 @@ describe("UsageService", () => {
         yield* service.awaitPersisted;
         yield* Effect.promise(() => NodeFSP.rm(transcript));
         yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(oldScan);
+        assert.isTrue(Exit.isFailure(yield* Fiber.await(oldScan)));
         yield* service.awaitPersisted;
         const restarted = yield* UsageService.make;
         assert.strictEqual(totalOutputTokens(yield* restarted.readSummary(window)), 0);

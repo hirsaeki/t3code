@@ -1,3 +1,9 @@
+import {
+  resolveProviderInstanceEnabled,
+  type ServerSettings,
+  UsageReadError,
+} from "@t3tools/contracts";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import {
   totalTokens,
@@ -102,14 +108,15 @@ interface CachedRow {
 }
 
 // Parsed rows by `${databasePath}\0${table}`, then rowid, so unchanged rows are not read again.
-const rowCache = new Map<string, { version: string; rows: Map<number, CachedRow> }>();
+type RowCache = Map<string, { version: string; rows: Map<number, CachedRow> }>;
+let rowCache: RowCache = new Map();
 // Concurrent scans of the same database would each read every uncached row.
 const scanLock = Semaphore.makeUnsafe(1);
 
-/** Wait for an in-flight read before clearing, so it cannot repopulate revoked data. */
-export const clearOpenCodeUsageCache = Effect.sync(() => rowCache.clear()).pipe(
-  scanLock.withPermit,
-);
+// Running and queued scans retain their old map, so clearing cannot give them a live cache again.
+export const clearOpenCodeUsageCache = Effect.sync(() => {
+  rowCache = new Map();
+});
 
 const isNotFound = (cause: PlatformError.PlatformError) => cause.reason._tag === "NotFound";
 const MESSAGE_PAGE_SIZE = 64;
@@ -131,10 +138,11 @@ const LEGACY_STAT_CONCURRENCY = 4;
 // Batch stats so huge directories do not stay in memory.
 const LEGACY_STAT_BATCH = 256;
 
-export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
+const readOpenCodeUsageWithCache = Effect.fn("readOpenCodeUsage")(function* (
   root: string,
   sinceMs: number,
-  retentionCutoffMs = sinceMs,
+  retentionCutoffMs: number,
+  cache: RowCache,
 ): Effect.fn.Return<OpenCodeUsageReadResult, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -155,7 +163,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
 
   const resolvedRoot = path.resolve(root);
   // Retention still applies when a transient inventory error prevents reading the database.
-  for (const [key, cached] of rowCache) {
+  for (const [key, cached] of cache) {
     if (path.dirname(path.resolve(key.split("\0")[0]!)) !== resolvedRoot) continue;
     for (const [rowId, entry] of cached.rows) {
       const timestampMs = entry.record?.timestampMs ?? entry.created;
@@ -163,7 +171,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
         cached.rows.delete(rowId);
       }
     }
-    if (cached.rows.size === 0) rowCache.delete(key);
+    if (cached.rows.size === 0) cache.delete(key);
   }
 
   let inventoriedDatabases = false;
@@ -202,10 +210,10 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
   // Only an authoritative inventory proves absence; read errors retain unexpired rows.
   if (inventoriedDatabases) {
     const present = new Set(databases.map((name) => path.resolve(root, name)));
-    for (const key of rowCache.keys()) {
+    for (const key of cache.keys()) {
       const databasePath = path.resolve(key.split("\0")[0]!);
       if (path.dirname(databasePath) === resolvedRoot && !present.has(databasePath)) {
-        rowCache.delete(key);
+        cache.delete(key);
       }
     }
   }
@@ -239,7 +247,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
         )).map((row) => row.name),
       );
       for (const table of ["message", "session_message"]) {
-        if (!tables.has(table)) rowCache.delete(`${file.path}\0${table}`);
+        if (!tables.has(table)) cache.delete(`${file.path}\0${table}`);
       }
       if (!tables.has("message") && !tables.has("session_message")) error = true;
       const columnsOf = (table: string) =>
@@ -334,7 +342,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
         )).toSorted((a, b) => a.row_id - b.row_id);
         databaseRows += listed.length;
         const key = `${file.path}\0${table}`;
-        const previous = rowCache.get(key);
+        const previous = cache.get(key);
         const reusable = previous?.version === version ? previous.rows : undefined;
         const cached = new Map<number, CachedRow>();
         const misses: typeof listed = [];
@@ -418,7 +426,7 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
           if (entry.record !== null && entry.record.timestampMs < retentionCutoffMs)
             cached.delete(rowId);
         }
-        rowCache.set(key, { version, rows: cached });
+        cache.set(key, { version, rows: cached });
       }
     }).pipe(
       (read) => Effect.flatMap(SqlClient.SqlClient, (sql) => sql.withTransaction(read)),
@@ -508,6 +516,15 @@ export const readOpenCodeUsage = Effect.fn("readOpenCodeUsage")(function* (
   return { files, missing: !found && !error, error };
 }, scanLock.withPermit);
 
+// The named reader owns tracing; capture its cache before waiting for the shared scan lock.
+export const readOpenCodeUsage = Effect.fnUntraced(function* (
+  root: string,
+  sinceMs: number,
+  retentionCutoffMs = sinceMs,
+) {
+  return yield* readOpenCodeUsageWithCache(root, sinceMs, retentionCutoffMs, rowCache);
+});
+
 const resolveOpenCodeDataDirs = Effect.fn("resolveOpenCodeDataDirs")(function* (
   environment: NodeJS.ProcessEnv,
 ) {
@@ -535,32 +552,76 @@ const resolveOpenCodeDataDirs = Effect.fn("resolveOpenCodeDataDirs")(function* (
   return [...canonical];
 });
 
-export type OpenCodeUsageReaderEnv = FileSystem.FileSystem | Path.Path;
+const selectionKey = (settings: ServerSettings) =>
+  JSON.stringify([
+    Object.entries(settings.providerInstances).filter(
+      ([, instance]) => instance.driver === "opencode",
+    ),
+    settings.usageHistoryRetentionDays,
+  ]);
+
+export type OpenCodeUsageReaderEnv = FileSystem.FileSystem | Path.Path | ProviderHost.ProviderHost;
 
 export const openCodeUsageReader: ProviderUsageReader<OpenCodeSettings, OpenCodeUsageReaderEnv> = {
   kind: "scan",
   provider: "opencode",
-  scan: Effect.fn("openCodeUsageReader.scan")(function* ({
-    instances,
-    windowStartMs,
-    retentionCutoffMs,
-  }) {
-    const roots = new Set<string>();
-    for (const instance of instances) {
-      for (const root of yield* resolveOpenCodeDataDirs(instance.environment)) roots.add(root);
-    }
-    return yield* Effect.forEach(
-      roots,
-      (dir) =>
-        readOpenCodeUsage(dir, windowStartMs, retentionCutoffMs).pipe(
-          Effect.map((result) => ({
-            dir,
-            files: result.missing && !result.error ? null : result.files,
-            status: result.error ? ("partial" as const) : ("ok" as const),
-            ...(result.error ? { message: "Some OpenCode history could not be read." } : {}),
-          })),
+  scan: Effect.fn("openCodeUsageReader.scan")(
+    function* ({ instances, settings, windowStartMs, retentionCutoffMs }) {
+      const host = yield* ProviderHost.ProviderHost;
+      const requestedSelection = selectionKey(settings);
+      const cache = yield* host.settings.withSnapshot((current) =>
+        Effect.sync(() =>
+          selectionKey(current) === requestedSelection &&
+          instances.every(({ instanceId }) => {
+            const instance = current.providerInstances[instanceId];
+            return (
+              instance?.driver === "opencode" &&
+              instance.usageHistoryEnabled === true &&
+              resolveProviderInstanceEnabled(instance)
+            );
+          })
+            ? rowCache
+            : undefined,
         ),
-      { concurrency: "unbounded" },
-    );
-  }),
+      );
+      if (cache === undefined) return [];
+      const stillSelected = host.settings.withSnapshot((current) =>
+        Effect.sync(() => {
+          if (cache !== rowCache) return false;
+          if (selectionKey(current) !== requestedSelection) {
+            rowCache = new Map();
+            return false;
+          }
+          return true;
+        }),
+      );
+      const roots = new Set<string>();
+      for (const instance of instances) {
+        for (const root of yield* resolveOpenCodeDataDirs(instance.environment)) roots.add(root);
+      }
+      if (!(yield* stillSelected)) return [];
+      const sources = yield* Effect.forEach(
+        roots,
+        (dir) =>
+          readOpenCodeUsageWithCache(dir, windowStartMs, retentionCutoffMs, cache).pipe(
+            Effect.map((result) => ({
+              dir,
+              files: result.missing && !result.error ? null : result.files,
+              status: result.error ? ("partial" as const) : ("ok" as const),
+              ...(result.error ? { message: "Some OpenCode history could not be read." } : {}),
+            })),
+          ),
+        { concurrency: "unbounded" },
+      );
+      return (yield* stillSelected) ? sources : [];
+    },
+    Effect.mapError(
+      (cause) =>
+        new UsageReadError({
+          reason: "scanFailed",
+          detail: "OpenCode usage source settings could not be verified.",
+          cause,
+        }),
+    ),
+  ),
 };

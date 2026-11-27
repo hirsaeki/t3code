@@ -27,6 +27,7 @@ export class AntigravityUsage extends Context.Service<
   {
     readonly scan: (input: {
       readonly instances: ReadonlyArray<ProviderUsageInstance<AntigravitySettings>>;
+      readonly settings: ServerSettings;
       readonly windowStartMs: number;
       readonly retentionCutoffMs: number;
     }) => Effect.Effect<ReadonlyArray<ProviderUsageScan>, UsageReadError>;
@@ -54,16 +55,37 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => ({ providerInstances: {}, usageHistoryRetentionDays: 92 })),
     ),
   );
+  const reconcileSelection = (settings: ServerSettings) => {
+    const next = selectionKey(settings);
+    if (next !== previousSelection) cache = makeAntigravityUsageCache();
+    previousSelection = next;
+    return next;
+  };
   yield* settingsChanges.pipe(
-    Stream.runForEach((settings) =>
-      Effect.sync(() => {
-        const next = selectionKey(settings);
-        if (next !== previousSelection) cache = makeAntigravityUsageCache();
-        previousSelection = next;
-      }),
-    ),
+    Stream.runForEach((settings) => Effect.sync(() => reconcileSelection(settings))),
     Effect.forkScoped,
   );
+
+  const selectedCache = Effect.fn("AntigravityUsage.selectedCache")(function* (
+    settings: ServerSettings,
+  ) {
+    return yield* host.settings
+      .withSnapshot((current) =>
+        Effect.sync(() =>
+          reconcileSelection(current) === selectionKey(settings) ? cache : undefined,
+        ),
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new UsageReadError({
+              reason: "scanFailed",
+              detail: "Antigravity usage settings could not be verified.",
+              cause,
+            }),
+        ),
+      );
+  });
 
   const dataRoots = Effect.fn("AntigravityUsage.dataRoots")(function* (
     environment: NodeJS.ProcessEnv,
@@ -89,9 +111,13 @@ const make = Effect.gen(function* () {
 
   const scan: AntigravityUsage["Service"]["scan"] = Effect.fn("AntigravityUsage.scan")(function* ({
     instances,
+    settings,
     windowStartMs,
     retentionCutoffMs,
   }) {
+    // Capture before root I/O so a revoked scan can never populate the replacement cache.
+    const scanCache = yield* selectedCache(settings);
+    if (scanCache === undefined) return [];
     const roots: Array<string> = [];
     for (const instance of instances) roots.push(...(yield* dataRoots(instance.environment)));
     for (const { instanceId } of instances) {
@@ -123,7 +149,7 @@ const make = Effect.gen(function* () {
         : resolvedRoot;
       conversationDirs.add(yield* fileSystem.realPath(dir).pipe(Effect.orElseSucceed(() => dir)));
     }
-    const scanCache = cache;
+    if ((yield* selectedCache(settings)) !== scanCache) return [];
     const result = yield* readAntigravityUsage(
       [...conversationDirs],
       windowStartMs,
@@ -135,7 +161,7 @@ const make = Effect.gen(function* () {
     // Keep cross-file attribution intact during the read; then evict any database with expired records.
     for (const [file, entry] of scanCache) {
       if (
-        entry.data.candidates.some((candidate) => candidate.record.timestampMs < retentionCutoffMs)
+        entry.data?.candidates.some((candidate) => candidate.record.timestampMs < retentionCutoffMs)
       )
         scanCache.delete(file);
     }
@@ -154,7 +180,7 @@ const make = Effect.gen(function* () {
         ...(failed ? { message: "Some Antigravity history could not be read." } : {}),
       });
     }
-    return scanned;
+    return (yield* selectedCache(settings)) === scanCache ? scanned : [];
   });
 
   return AntigravityUsage.of({ scan });
@@ -166,8 +192,5 @@ export const antigravityUsageReader: ProviderUsageReader<AntigravitySettings, An
   kind: "scan",
   provider: "antigravity",
   rateModel: antigravityRateModel,
-  scan: ({ instances, windowStartMs, retentionCutoffMs }) =>
-    AntigravityUsage.pipe(
-      Effect.flatMap((usage) => usage.scan({ instances, windowStartMs, retentionCutoffMs })),
-    ),
+  scan: (input) => AntigravityUsage.pipe(Effect.flatMap((usage) => usage.scan(input))),
 };
