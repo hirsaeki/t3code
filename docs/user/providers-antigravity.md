@@ -155,7 +155,20 @@ T3 does not support Antigravity goal status, pause, resume, or clear commands.
 ## Check access and troubleshoot
 
 Antigravity account limits are unavailable in **Usage > Limits** because its native
-ACP interface does not report them. Check your allowances in Google's own client.
+ACP interface does not report them. You can preview a quota report from the
+official Antigravity CLI in the T3 terminal on web or desktop.
+
+With a CLI that supports headless `/usage` and has slash commands enabled, run:
+
+```sh
+agy -p "/usage" --output-format json
+```
+
+Select the JSON output, open the terminal context menu, and choose **Show quota**.
+If the selection is incomplete, paste the JSON into the preview. You can optionally
+label the source account. The preview shows when you opened it in T3 and is
+discarded when you close it.
+
 T3 does not read Antigravity's OAuth tokens or OS keyring to obtain quotas.
 
 A server restart keeps your Google sign-in. The provider shows the saved account

@@ -20,6 +20,7 @@ import { extractTerminalLinks } from "../terminal-links";
 import { expect, it, vi } from "vite-plus/test";
 import { act, fakeTimers, render } from "../../test/render";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
+import "~/index.css";
 
 const fixture = vi.hoisted(() => ({
   statusByThreadId: new Map<string, "starting" | "running" | "exited">(),
@@ -28,6 +29,9 @@ const fixture = vi.hoisted(() => ({
   pressKey: null as ((event: KeyboardEvent) => boolean) | null,
   writes: [] as Array<{ threadId: string; data: string }>,
   messages: [] as string[],
+  selection: "",
+  surfaceFocuses: 0,
+  showContextMenu: null as (() => Promise<"show-quota">) | null,
   resetSessions: () => {},
   setSession: (
     _thread: ScopedThreadRef,
@@ -53,6 +57,12 @@ const fakeSurface: object = new Proxy(
   {
     input: document.createElement("textarea"),
     write: (data: string) => fixture.messages.push(data),
+    hasSelection: () => fixture.selection.length > 0,
+    getSelection: () => fixture.selection,
+    getSelectionPosition: () => ({ start: { x: 0, y: 0 }, end: { x: 1, y: 0 } }),
+    focus: () => {
+      fixture.surfaceFocuses++;
+    },
     // The real surface re-reports its measured grid.
     resendSize: () => {
       const size = fixture.reportedSize;
@@ -202,12 +212,17 @@ vi.mock("../state/projects", async () => {
 });
 vi.mock("../editorPreferences", () => ({ useOpenInPreferredEditor: () => () => {} }));
 vi.mock("./preview/openTerminalLinkInPreview", () => ({ openTerminalLinkInPreview: () => {} }));
-vi.mock("~/localApi", () => ({ readLocalApi: () => null }));
+vi.mock("~/localApi", () => ({
+  readLocalApi: () =>
+    fixture.showContextMenu ? { contextMenu: { show: fixture.showContextMenu } } : null,
+}));
 vi.mock("../hooks/useSettings", async () => {
   const { DEFAULT_CLIENT_SETTINGS } = await import("@t3tools/contracts/settings");
   return {
     useClientSettings: <T,>(select: (settings: typeof DEFAULT_CLIENT_SETTINGS) => T) =>
       select(DEFAULT_CLIENT_SETTINGS),
+    usePrimarySettings: <T,>(select: (settings: { timestampFormat: "locale" }) => T) =>
+      select({ timestampFormat: "locale" }),
     ensureClientSettingsHydrated: async () => {},
     getClientSettings: () => DEFAULT_CLIENT_SETTINGS,
   };
@@ -260,6 +275,9 @@ function setup(originalStatus: "starting" | "exited" = "exited") {
   fixture.pressKey = null;
   fixture.writes = [];
   fixture.messages = [];
+  fixture.selection = "";
+  fixture.surfaceFocuses = 0;
+  fixture.showContextMenu = null;
   fixture.surfaceOptions = [];
   fixture.reportedSize = null;
   fixture.runResize = () => Promise.resolve(AsyncResult.success(undefined));
@@ -269,6 +287,57 @@ function setup(originalStatus: "starting" | "exited" = "exited") {
   useTerminalUiStateStore.setState(useTerminalUiStateStore.getInitialState());
   return { original, other };
 }
+
+it("opens a manual quota preview for the selected terminal output without writing to the shell", async () => {
+  const { other: threadRef } = setup();
+  const report = JSON.stringify({
+    status: "SUCCESS",
+    num_turns: 0,
+    command: {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [{ id: "gemini-5h", window: "5h", remaining_fraction: 0.73 }],
+          },
+        ],
+      },
+    },
+  });
+  fixture.selection = `PS> agy -p "/usage" --output-format json\n${report}\nPS>`;
+  const showContextMenu = vi.fn(async () => "show-quota" as const);
+  fixture.showContextMenu = showContextMenu;
+  await using screen = await render(<Drawer threadRef={threadRef} onCloseTerminal={() => {}} />);
+  await act(async () => {
+    fixture.pendingSurfaces.shift()?.();
+  });
+  await act(() => {
+    fixture.surfaceOptions.at(-1)?.onContextMenu?.(new MouseEvent("contextmenu"));
+  });
+  expect(showContextMenu).toHaveBeenCalledWith(
+    expect.arrayContaining([expect.objectContaining({ id: "show-quota" })]),
+    expect.anything(),
+    expect.anything(),
+  );
+  await expect.element(screen.getByRole("dialog", { name: "Antigravity quota" })).toBeVisible();
+  await expect.element(screen.getByText("73%")).toBeVisible();
+  const focusCount = fixture.surfaceFocuses;
+  await screen.getByRole("button", { name: "Close" }).click();
+  await expect
+    .element(screen.getByRole("dialog", { name: "Antigravity quota" }))
+    .not.toBeInTheDocument();
+  await vi.waitFor(() => expect(fixture.surfaceFocuses).toBeGreaterThan(focusCount));
+  fixture.selection = report.slice(0, -1);
+  await act(() => {
+    fixture.surfaceOptions.at(-1)?.onContextMenu?.(new MouseEvent("contextmenu"));
+  });
+  await expect.element(screen.getByRole("alert")).toBeVisible();
+  await screen.getByRole("textbox", { name: "Antigravity quota JSON" }).fill(report);
+  await screen.getByRole("button", { name: "Show quota" }).click();
+  await expect.element(screen.getByText("73%")).toBeVisible();
+  expect(fixture.writes).toEqual([]);
+});
 
 it("drops input until the shell runs instead of failing a write for every key", async () => {
   const { original } = setup("starting");

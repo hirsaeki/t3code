@@ -12973,5 +12973,15 @@
   "27d76249d09eb69f": "Guía de revisión lista",
   "faa3bb26abb39c93": "Falló la guía de revisión",
   "b7df38b7d8792d78": "Abrir guía",
-  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión"
+  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
+  "89597a3dd2abc9bb": "Mostrar cuota",
+  "e78008eb62756ebe": "Desconocido",
+  "9e1d887f247c057b": "No se encontró un informe completo de cuota de Antigravity. Vuelve a seleccionar la salida del comando o pega el JSON abajo.",
+  "d9048e271bf33d6d": "JSON de cuota de Antigravity",
+  "f6e0f22931974740": "Cuenta de origen (opcional)",
+  "59ff612cefe55c94": "Abierto en T3 el {time}",
+  "a78cd5e9ba29195c": "Se restablece el {time}",
+  "11a47a73b3984dbc": "Fecha de restablecimiento desconocida",
+  "017d9ab0aa4b36b1": "Cuota de Antigravity",
+  "5560031732761551": "Captura manual de la salida del terminal"
 }
