@@ -122,10 +122,12 @@ const RatesCacheFile = Schema.Struct({
 });
 const decodeRatesCache = Schema.decodeUnknownEffect(Schema.fromJsonString(RatesCacheFile));
 const encodeRatesCache = Schema.encodeEffect(Schema.fromJsonString(RatesCacheFile));
+const isUsageReadError = Schema.is(UsageReadError);
 
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeUsageRecordKey = Schema.encodeSync(ScanCacheJson);
+const encodeOpenCodeSettingsKey = Schema.encodeEffect(ScanCacheJson);
 const CachedSource = Schema.Struct({
   dir: Schema.String,
   volumeId: Schema.String,
@@ -480,7 +482,7 @@ export const make = Effect.gen(function* () {
       })
       .pipe(
         Effect.mapError((cause) =>
-          cause instanceof UsageReadError
+          isUsageReadError(cause)
             ? cause
             : new UsageReadError({
                 reason: "scanFailed",
@@ -680,7 +682,7 @@ export const make = Effect.gen(function* () {
   const clearChangedOpenCodeCache = Effect.fn("UsageService.clearChangedOpenCodeCache")(function* (
     settings: ServerSettingsValue,
   ) {
-    const key = JSON.stringify([
+    const key = yield* encodeOpenCodeSettingsKey([
       Object.entries(settings.providerInstances).filter(
         ([, instance]) => instance.driver === "opencode",
       ),

@@ -29,7 +29,9 @@ const makeFixture = Effect.fn("TextGeneration.test.makeFixture")(function* (
 ) {
   const calls: string[] = [];
   const orchestrationAdapter = yield* ProviderAdapter.ProviderAdapterV2.pipe(
-    Effect.provide(Layer.mock(ProviderAdapter.ProviderAdapterV2)({})),
+    Effect.provide(
+      Layer.mock(ProviderAdapter.ProviderAdapterV2)({ instanceId: selectedId, driver }),
+    ),
   );
   const runner: TextGenerationOperations.Runner = (request) => {
     calls.push(request.modelSelection.instanceId);
@@ -95,7 +97,9 @@ const makeFixture = Effect.fn("TextGeneration.test.makeFixture")(function* (
             },
           }),
         }),
-        Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({}),
+        Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+          resolveLink: () => Effect.die("unused"),
+        }),
         ProviderInstallationGate.layer,
         Layer.mock(TextGenerators.TextGenerators)({
           runner: (id) => Effect.succeed(id === apiId ? runner : undefined),

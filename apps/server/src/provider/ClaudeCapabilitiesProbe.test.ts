@@ -78,7 +78,13 @@ it.effect(
   "reads account usage only after opt-in while retaining native model and auth discovery",
   () =>
     Effect.gen(function* () {
-      const usage = vi.fn(async () => ({ rate_limits_available: true, rate_limits: {} }));
+      const usage = vi.fn(
+        async (
+          ..._args: Parameters<
+            ClaudeSdk.Query["usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET"]
+          >
+        ) => ({ rate_limits_available: true, rate_limits: {} }),
+      );
       const initialization = {
         account: { email: "dev@example.com", subscriptionType: "pro", tokenSource: "oauth" },
         commands: [],
@@ -88,7 +94,7 @@ it.effect(
         () =>
           ({
             initializationResult: async () => initialization,
-            usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: usage,
+            usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: (...args) => usage(...args),
           }) as ReturnType<typeof ClaudeSdk.query>,
       );
       yield* Effect.addFinalizer(() => Effect.sync(() => query.mockRestore()));
@@ -117,7 +123,7 @@ it.effect(
               consent = false;
               return initialization;
             },
-            usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: usage,
+            usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: (...args) => usage(...args),
           }) as ReturnType<typeof ClaudeSdk.query>,
       );
       const revoked = yield* probeClaudeCapabilities(
