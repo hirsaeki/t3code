@@ -12978,5 +12978,15 @@
   "27d76249d09eb69f": "Review-Leitfaden bereit",
   "faa3bb26abb39c93": "Review-Leitfaden fehlgeschlagen",
   "b7df38b7d8792d78": "Leitfaden öffnen",
-  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden"
+  "9e91e9a77b664e4e": "Review-Leitfaden konnte nicht gestartet werden",
+  "89597a3dd2abc9bb": "Kontingent anzeigen",
+  "e78008eb62756ebe": "Unbekannt",
+  "9e1d887f247c057b": "Kein vollständiger Antigravity-Kontingentbericht gefunden. Wähle die Befehlsausgabe erneut aus oder füge unten das JSON ein.",
+  "d9048e271bf33d6d": "Antigravity-Kontingent als JSON",
+  "f6e0f22931974740": "Quellkonto (optional)",
+  "59ff612cefe55c94": "In T3 geöffnet um {time}",
+  "a78cd5e9ba29195c": "Wird am {time} zurückgesetzt",
+  "11a47a73b3984dbc": "Zeitpunkt der Zurücksetzung unbekannt",
+  "017d9ab0aa4b36b1": "Antigravity-Kontingent",
+  "5560031732761551": "Manuelle Momentaufnahme aus der Terminalausgabe"
 }

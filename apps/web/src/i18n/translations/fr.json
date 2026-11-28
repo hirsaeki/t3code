@@ -12978,5 +12978,15 @@
   "27d76249d09eb69f": "Guide de revue prêt",
   "faa3bb26abb39c93": "Échec du guide de revue",
   "b7df38b7d8792d78": "Ouvrir le guide",
-  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue"
+  "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
+  "89597a3dd2abc9bb": "Afficher le quota",
+  "e78008eb62756ebe": "Inconnu",
+  "9e1d887f247c057b": "Aucun rapport de quota Antigravity complet n’a été trouvé. Sélectionnez à nouveau la sortie de la commande ou collez le JSON ci-dessous.",
+  "d9048e271bf33d6d": "Quota Antigravity au format JSON",
+  "f6e0f22931974740": "Compte source (facultatif)",
+  "59ff612cefe55c94": "Ouvert dans T3 le {time}",
+  "a78cd5e9ba29195c": "Réinitialisation le {time}",
+  "11a47a73b3984dbc": "Heure de réinitialisation inconnue",
+  "017d9ab0aa4b36b1": "Quota Antigravity",
+  "5560031732761551": "Instantané manuel de la sortie du terminal"
 }

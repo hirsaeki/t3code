@@ -288,6 +288,14 @@ describe("GhosttyTerminalCore snapshots", () => {
     });
   });
 
+  it("preserves complete JSON when a terminal selection spans wrapped rows", async () => {
+    const core = await createCore();
+    const json = JSON.stringify({ message: "a quota report spans many terminal rows" });
+    core.write(`PS> agy\r\n${json}\r\nPS>`);
+    core.selectAll();
+    expect(core.selectionText()).toContain(json);
+  });
+
   it("resolves foreground and background independently without retaining prior cell colors", async () => {
     const core = await createCore();
     core.write(

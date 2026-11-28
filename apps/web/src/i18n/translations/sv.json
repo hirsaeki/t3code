@@ -12985,5 +12985,15 @@
   "27d76249d09eb69f": "Granskningsguiden är klar",
   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
   "b7df38b7d8792d78": "Öppna guiden",
-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
+  "89597a3dd2abc9bb": "Visa kvot",
+  "e78008eb62756ebe": "Okänt",
+  "9e1d887f247c057b": "Ingen fullständig Antigravity-kvotrapport hittades. Markera kommandots utdata igen eller klistra in JSON nedan.",
+  "d9048e271bf33d6d": "Antigravity-kvot i JSON-format",
+  "f6e0f22931974740": "Källkonto (valfritt)",
+  "59ff612cefe55c94": "Öppnades i T3 {time}",
+  "a78cd5e9ba29195c": "Återställs {time}",
+  "11a47a73b3984dbc": "Okänd återställningstid",
+  "017d9ab0aa4b36b1": "Antigravity-kvot",
+  "5560031732761551": "Manuell ögonblicksbild från terminalens utdata"
 }

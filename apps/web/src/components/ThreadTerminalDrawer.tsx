@@ -94,6 +94,11 @@ import { terminalEnvironment } from "../state/terminal";
 import { useEnvironmentScope } from "../state/session";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
 import { terminalInputWriter } from "./terminal/terminalInputWriter";
+import {
+  AntigravityQuotaPreview,
+  type AntigravityQuotaSnapshot,
+} from "./terminal/AntigravityQuotaPreview";
+import { parseAntigravityQuotaReport } from "./terminal/antigravityQuotaReport";
 import { useAtomCommand } from "../state/use-atom-command";
 import { preventTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
 import { observeResize } from "../lib/observeResize";
@@ -416,6 +421,7 @@ function terminalSelectionLineRange(position: { start: { y: number }; end: { y: 
 
 export type TerminalContextMenuAction =
   | "add-to-chat"
+  | "show-quota"
   | "copy"
   | "paste"
   | "select-all"
@@ -445,6 +451,7 @@ function terminalContextMenuItems(options: {
       ...item,
       disabled: !hasSelection,
     })),
+    { id: "show-quota", label: m(msg("Show quota")) },
     { id: "paste", label: m(msg("Paste")), ...(options.readOnly ? { disabled: true } : {}) },
     { id: "select-all", label: m(msg("Select all", { $context: "select all terminal text" })) },
     { id: "scroll-to-bottom", label: m(msg("Jump to latest")) },
@@ -601,6 +608,7 @@ function TerminalSessionViewport({
   });
   const hasHandledExitRef = useRef(false);
   const selectionActionRequestIdRef = useRef(0);
+  const [quotaSnapshot, setQuotaSnapshot] = useState<AntigravityQuotaSnapshot | null>(null);
   const readKeybindings = useEffectEvent(() => keybindings);
   const readThreadShortcutContext = useEffectEvent(() => threadShortcutContext(threadRef));
   const handleSessionExited = useEffectEvent(() => {
@@ -940,6 +948,12 @@ function TerminalSessionViewport({
           return;
         }
         switch (clicked) {
+          case "show-quota":
+            setQuotaSnapshot({
+              groups: parseAntigravityQuotaReport(selectionAction?.clipboardText ?? ""),
+              openedAt: new Date().toISOString(),
+            });
+            return;
           case "add-to-chat":
             if (selectionAction && canAddSelectionToChat()) {
               addSelectionToChat(selectionAction.clipboardText);
@@ -1230,11 +1244,18 @@ function TerminalSessionViewport({
     };
   };
   return (
-    <div
-      ref={attachContainer}
-      tabIndex={-1}
-      className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
-    />
+    <>
+      <div
+        ref={attachContainer}
+        tabIndex={-1}
+        className="relative h-full w-full overflow-hidden bg-(--terminal-background)"
+      />
+      <AntigravityQuotaPreview
+        snapshot={quotaSnapshot}
+        onClose={() => setQuotaSnapshot(null)}
+        restoreFocus={() => terminalRef.current?.focus()}
+      />
+    </>
   );
 }
 
