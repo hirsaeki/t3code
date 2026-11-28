@@ -1086,19 +1086,21 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        TestProviderHost.layer({
-          settings: {
-            ...DEFAULT_SERVER_SETTINGS,
-            providerInstances: {
-              [ProviderInstanceId.make("opencode-test")]: {
-                driver: ProviderDriverKind.make("opencode"),
-                ...flags,
+        Layer.mergeAll(
+          TestProviderHost.layer({
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              providerInstances: {
+                [ProviderInstanceId.make("opencode-test")]: {
+                  driver: ProviderDriverKind.make("opencode"),
+                  ...flags,
+                },
               },
             },
-          },
-        }),
+          }),
+          TestClock.layer(),
+        ),
       ),
-      Effect.provide(TestClock.layer()),
     ),
   );
 
@@ -1340,21 +1342,23 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        TestProviderHost.layer({
-          runBackgroundWork: scenario.demand,
-          settings: scenario.intervalOff
-            ? {
-                ...optedInSettings("opencode-usage-recovery"),
-                backgroundActivity: {
-                  ...DEFAULT_SERVER_SETTINGS.backgroundActivity,
-                  profile: "custom",
-                  overrides: { providerHealthRefreshInterval: Duration.zero },
-                },
-              }
-            : optedInSettings("opencode-usage-recovery"),
-        }),
+        Layer.mergeAll(
+          TestProviderHost.layer({
+            runBackgroundWork: scenario.demand,
+            settings: scenario.intervalOff
+              ? {
+                  ...optedInSettings("opencode-usage-recovery"),
+                  backgroundActivity: {
+                    ...DEFAULT_SERVER_SETTINGS.backgroundActivity,
+                    profile: "custom",
+                    overrides: { providerHealthRefreshInterval: Duration.zero },
+                  },
+                }
+              : optedInSettings("opencode-usage-recovery"),
+          }),
+          TestClock.layer(),
+        ),
       ),
-      Effect.provide(TestClock.layer()),
     ),
   );
 
@@ -1444,9 +1448,11 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     }).pipe(
       Effect.scoped,
       Effect.provide(
-        TestProviderHost.layer({ settings: optedInSettings("opencode-go-key-only") }),
+        Layer.mergeAll(
+          TestProviderHost.layer({ settings: optedInSettings("opencode-go-key-only") }),
+          TestClock.layer(),
+        ),
       ),
-      Effect.provide(TestClock.layer()),
     ),
   );
 });
