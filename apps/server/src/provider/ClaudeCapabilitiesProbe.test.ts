@@ -83,9 +83,14 @@ it.effect(
           ..._args: Parameters<
             ClaudeSdk.Query["usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET"]
           >
-        ) => ({ rate_limits_available: true, rate_limits: {} }),
+        ): Promise<
+          Pick<ClaudeSdk.SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">
+        > => ({ rate_limits_available: true, rate_limits: {} }),
       );
-      const initialization = {
+      const initialization: Pick<
+        Awaited<ReturnType<ClaudeSdk.Query["initializationResult"]>>,
+        "account" | "commands" | "models"
+      > = {
         account: { email: "dev@example.com", subscriptionType: "pro", tokenSource: "oauth" },
         commands: [],
         models: [{ value: "fixture-model", displayName: "Fixture", description: "" }],
