@@ -268,12 +268,31 @@ jobs:
         run: node apps/web/scripts/verify-built-boot.ts
 
       - name: Typecheck
+        id: typecheck_result
         if: ${{ !cancelled() && steps.typecheck.outcome == 'success' }}
         timeout-minutes: 5
         run: |
           until test -s "$RUNNER_TEMP/typecheck-status"; do sleep 1; done
           cat "$RUNNER_TEMP/typecheck.log"
-          exit "$(cat "$RUNNER_TEMP/typecheck-status")"
+          typecheck_status=$(cat "$RUNNER_TEMP/typecheck-status")
+          if [ "$typecheck_status" -ne 0 ]; then
+            diagnostics_status=0
+            (
+              cd apps/server &&
+                ../../node_modules/.bin/effect-tsgo tsrs --noEmit --pretty false
+            ) > "$RUNNER_TEMP/server-typecheck.txt" 2>&1 || diagnostics_status=$?
+            printf '\nDirect server typecheck exit code: %s\n' "$diagnostics_status" >> "$RUNNER_TEMP/server-typecheck.txt"
+            cat "$RUNNER_TEMP/server-typecheck.txt"
+          fi
+          exit "$typecheck_status"
+
+      - name: Upload server typecheck diagnostics
+        if: ${{ !cancelled() && steps.typecheck_result.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-typecheck-diagnostics
+          path: ${{ runner.temp }}/server-typecheck.txt
+          if-no-files-found: ignore
 
   # Everything except `t3` (apps/server) and the web app, which has its own job
   # below. `--parallel` drops the package dependency ordering that `vp run`

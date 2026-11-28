@@ -139,8 +139,9 @@ describe("readOpenCodeUsage", () => {
             );
           }),
         );
+        const mtimeSeconds = 1_780_000_000;
+        yield* fs.utimes(file, mtimeSeconds, mtimeSeconds);
         const originalBytes = yield* fs.readFile(file);
-        const originalInfo = yield* fs.stat(file);
         const fingerprint = Effect.gen(function* () {
           const main = yield* fs.stat(file);
           const wal = yield* Effect.option(fs.stat(`${file}-wal`));
@@ -214,8 +215,7 @@ describe("readOpenCodeUsage", () => {
         if (removed === "root") yield* fs.rename(path.join(parent, "saved"), root);
         if (removed === "table") {
           yield* fs.writeFile(file, originalBytes);
-          const mtime = Option.getOrThrow(originalInfo.mtime);
-          yield* fs.utimes(file, mtime.getTime() / 1000, mtime.getTime() / 1000);
+          yield* fs.utimes(file, mtimeSeconds, mtimeSeconds);
         }
         assert.deepStrictEqual(yield* fingerprint, originalFingerprint);
         bodyReads = 0;

@@ -1216,8 +1216,8 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
           usageReads += 1;
           assert.strictEqual(request.headers.authorization, "Bearer test-go-key");
           if (scenario.unsupported)
-            return Effect.succeed(
-              HttpClientResponse.fromWeb(request, new Response(null, { status: 403 })),
+            return Deferred.succeed(usageStarted, undefined).pipe(
+              Effect.as(HttpClientResponse.fromWeb(request, new Response(null, { status: 403 }))),
             );
           if (usageReads === 1)
             return Deferred.succeed(usageStarted, undefined).pipe(Effect.andThen(Effect.never));
@@ -1304,7 +1304,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
             Effect.forkChild,
           )
         : undefined;
-      if (scenario.enabled && !scenario.unsupported) yield* Deferred.await(usageStarted);
+      if (scenario.enabled) yield* Deferred.await(usageStarted);
       yield* TestClock.adjust("5 seconds");
       const failed = initial
         ? Array.from(yield* Fiber.join(initial))[0]
