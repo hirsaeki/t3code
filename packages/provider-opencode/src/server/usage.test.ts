@@ -1,14 +1,25 @@
+import * as NodeSqlite from "node:sqlite";
 import type * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerSettings,
+} from "@t3tools/contracts";
+import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as SqlClient from "effect/sql/SqlClient";
 import { vi } from "vite-plus/test";
 
@@ -20,7 +31,7 @@ import {
   openCodeForkSourceAssistantId,
   openCodeForkSourceSessionId,
 } from "./usage.fixture.ts";
-import { openCodeUsageReader, readOpenCodeUsage } from "./usage.ts";
+import { clearOpenCodeUsageCache, openCodeUsageReader, readOpenCodeUsage } from "./usage.ts";
 
 const readerWorkers = vi.hoisted(() => ({ started: 0, enabled: false }));
 
@@ -100,6 +111,122 @@ const recordedForkDatabase = Effect.fn(function* (
 });
 
 describe("readOpenCodeUsage", () => {
+  it.effect.each(["database", "root", "table", "read-error", "expired-read-error"] as const)(
+    "reclaims removed or expired cached sources during a %s inventory",
+    (removed) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const parent = yield* fs.makeTempDirectoryScoped({ prefix: "usage-source-purge-" });
+        const root = path.join(parent, "history");
+        const file = path.join(root, "opencode.db");
+        yield* fs.makeDirectory(root);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* openDatabase(file);
+            yield* db.unsafe(
+              "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)",
+            );
+            yield* db.unsafe(
+              "INSERT INTO message VALUES ('original', 'private-session', ?, 1000)",
+              [
+                JSON.stringify({
+                  modelID: "private-model",
+                  time: { created: 1000 },
+                  tokens: { output: 5 },
+                }),
+              ],
+            );
+          }),
+        );
+        const mtimeSeconds = 1_780_000_000;
+        yield* fs.utimes(file, mtimeSeconds, mtimeSeconds);
+        const originalBytes = yield* fs.readFile(file);
+        const fingerprint = Effect.gen(function* () {
+          const main = yield* fs.stat(file);
+          const wal = yield* Effect.option(fs.stat(`${file}-wal`));
+          return {
+            device: main.dev,
+            inode: main.ino,
+            birthtime: main.birthtime,
+            size: main.size,
+            mtime: main.mtime,
+            wal: Option.map(wal, (info) => ({ size: info.size, mtime: info.mtime })),
+          };
+        });
+        const originalFingerprint = yield* fingerprint;
+        let bodyReads = 0;
+        const originalAll = NodeSqlite.StatementSync.prototype.all;
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(NodeSqlite.StatementSync.prototype, "all").mockImplementation(function (
+              this: NodeSqlite.StatementSync,
+              ...params
+            ) {
+              if (this.sourceSQL.includes("data ->")) bodyReads++;
+              return originalAll.apply(this, params);
+            }),
+          ),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        assert.strictEqual((yield* readOpenCodeUsage(root, 0)).files[0]?.records.length, 1);
+        bodyReads = 0;
+        yield* readOpenCodeUsage(root, 0);
+        assert.strictEqual(bodyReads, 0);
+
+        if (removed === "database") yield* fs.rename(file, path.join(root, "saved"));
+        if (removed === "root") yield* fs.rename(root, path.join(parent, "saved"));
+        if (removed === "table") {
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const db = yield* openDatabase(file);
+              yield* db.unsafe("DROP TABLE message");
+            }),
+          );
+        }
+        const inventoryFails = removed === "read-error" || removed === "expired-read-error";
+        const missing = yield* readOpenCodeUsage(
+          root,
+          0,
+          removed === "expired-read-error" ? 1001 : 0,
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            readDirectory: (directory) =>
+              inventoryFails && directory === root
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "PermissionDenied",
+                      module: "FileSystem",
+                      method: "readDirectory",
+                      pathOrDescriptor: root,
+                    }),
+                  )
+                : fs.readDirectory(directory),
+          }),
+        );
+        assert.deepStrictEqual(
+          missing.files.flatMap((entry) => entry.records),
+          [],
+        );
+        assert.strictEqual(missing.error, removed === "table" || inventoryFails);
+
+        if (removed === "database") yield* fs.rename(path.join(root, "saved"), file);
+        if (removed === "root") yield* fs.rename(path.join(parent, "saved"), root);
+        if (removed === "table") {
+          yield* fs.writeFile(file, originalBytes);
+          yield* fs.utimes(file, mtimeSeconds, mtimeSeconds);
+        }
+        assert.deepStrictEqual(yield* fingerprint, originalFingerprint);
+        bodyReads = 0;
+        const restored = yield* readOpenCodeUsage(root, 0);
+        assert.strictEqual(restored.files[0]?.records[0]?.sessionId, "private-session");
+        // The restored file has the same fingerprint: a cold body read proves its old rows were evicted.
+        assert.strictEqual(bodyReads, removed === "read-error" ? 0 : 1);
+        assert.deepStrictEqual(yield* fs.readFile(file), originalBytes);
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("bounds raw history allocations while counting every eligible message once", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -716,7 +843,6 @@ describe("readOpenCodeUsage", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
-import * as NodeSqlite from "node:sqlite";
 
 describe("openCodeUsageReader", () => {
   it.effect("scans canonical instance roots once, including XDG and home defaults", () =>
@@ -735,7 +861,7 @@ describe("openCodeUsageReader", () => {
       }
       yield* fileSystem.symlink(defaultRoot, alias);
       const instances = [
-        { id: "opencode", environment: {}, configured: false },
+        { id: "opencode", environment: {}, configured: true },
         {
           id: "opencode-list",
           environment: { OPENCODE_DATA_DIR: ` ${instanceRoot}, ${alias}, ${defaultRoot}, , ` },
@@ -747,6 +873,24 @@ describe("openCodeUsageReader", () => {
           configured: true,
         },
       ];
+      const settings: ServerSettings = {
+        ...DEFAULT_SERVER_SETTINGS,
+        providerInstances: Object.fromEntries(
+          instances.map(({ id, environment }) => [
+            id,
+            {
+              driver: ProviderDriverKind.make("opencode"),
+              enabled: true,
+              usageHistoryEnabled: true,
+              environment: Object.entries(environment).map(([name, value]) => ({
+                name,
+                value,
+                sensitive: false,
+              })),
+            },
+          ]),
+        ),
+      };
       if (openCodeUsageReader.kind !== "scan") throw new Error("Expected an OpenCode scan reader");
       const sources = yield* openCodeUsageReader
         .scan({
@@ -756,7 +900,7 @@ describe("openCodeUsageReader", () => {
             environment,
             configured,
           })),
-          settings: DEFAULT_SERVER_SETTINGS,
+          settings,
           windowStartMs: 0,
           retentionCutoffMs: 0,
           awaitRefresh: true,
@@ -764,11 +908,138 @@ describe("openCodeUsageReader", () => {
         .pipe(
           Effect.provideService(HostProcess.Environment, {}),
           Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.provide(TestProviderHost.layer({ settings })),
         );
       assert.deepStrictEqual(
         sources.map((source) => source.dir).sort(),
         [defaultRoot, instanceRoot, xdgRoot].sort(),
       );
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each(["before", "during", "reselected"] as const)(
+    "discards a revoked scan (%s root resolution)",
+    (phase) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "usage-revoked-root-" });
+        const root = yield* fs.realPath(temporary);
+        const file = path.join(root, "opencode.db");
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* openDatabase(file);
+            yield* db.unsafe(
+              "CREATE TABLE message (id TEXT, session_id TEXT, data TEXT, time_created INTEGER)",
+            );
+            yield* db.unsafe("INSERT INTO message VALUES ('message', 'private-session', ?, 1000)", [
+              JSON.stringify({
+                modelID: "private-model",
+                time: { created: 1000 },
+                tokens: { output: 5 },
+              }),
+            ]);
+          }),
+        );
+        const original = yield* fs.readFile(file);
+        const instanceId = ProviderInstanceId.make("opencode-private");
+        const settings: ServerSettings = {
+          ...DEFAULT_SERVER_SETTINGS,
+          providerInstances: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make("opencode"),
+              enabled: true,
+              usageHistoryEnabled: true,
+              environment: [{ name: "OPENCODE_DATA_DIR", value: root, sensitive: false }],
+            },
+          },
+        };
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let rootResolutions = 0;
+        let bodyReads = 0;
+        const originalAll = NodeSqlite.StatementSync.prototype.all;
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi.spyOn(NodeSqlite.StatementSync.prototype, "all").mockImplementation(function (
+              this: NodeSqlite.StatementSync,
+              ...params
+            ) {
+              if (this.sourceSQL.includes("data ->")) bodyReads++;
+              return originalAll.apply(this, params);
+            }),
+          ),
+          (spy) => Effect.sync(() => spy.mockRestore()),
+        );
+        yield* Effect.gen(function* () {
+          const hostSettings = yield* TestProviderHost.TestProviderHostSettings;
+          const revoke = hostSettings
+            .set({
+              ...settings,
+              providerInstances: {
+                [instanceId]: {
+                  ...settings.providerInstances[instanceId]!,
+                  usageHistoryEnabled: false,
+                },
+              },
+            })
+            .pipe(Effect.andThen(clearOpenCodeUsageCache));
+          if (openCodeUsageReader.kind !== "scan")
+            throw new Error("Expected an OpenCode scan reader");
+          const scan = openCodeUsageReader
+            .scan({
+              instances: [
+                {
+                  instanceId,
+                  config: undefined,
+                  configured: true,
+                  environment: { OPENCODE_DATA_DIR: root },
+                },
+              ],
+              settings,
+              windowStartMs: 0,
+              retentionCutoffMs: 0,
+              awaitRefresh: true,
+            })
+            .pipe(
+              Effect.provideService(FileSystem.FileSystem, {
+                ...fs,
+                realPath: (target) =>
+                  target !== root
+                    ? fs.realPath(target)
+                    : Effect.gen(function* () {
+                        rootResolutions++;
+                        if (phase !== "before") {
+                          yield* Deferred.succeed(started, undefined);
+                          yield* Deferred.await(release);
+                        }
+                        return yield* fs.realPath(target);
+                      }),
+              }),
+            );
+          if (phase === "before") {
+            yield* revoke;
+            assert.deepStrictEqual(yield* scan, []);
+            assert.strictEqual(rootResolutions, 0);
+          } else {
+            const running = yield* Effect.forkChild(scan);
+            yield* Deferred.await(started);
+            yield* revoke;
+            if (phase === "reselected") yield* hostSettings.set(settings);
+            yield* Deferred.succeed(release, undefined);
+            assert.deepStrictEqual(yield* Fiber.join(running), []);
+          }
+          assert.strictEqual(bodyReads, 0);
+          assert.strictEqual((yield* readOpenCodeUsage(root, 0)).files[0]?.records.length, 1);
+          assert.strictEqual(bodyReads, 1);
+          yield* readOpenCodeUsage(root, 0);
+          assert.strictEqual(bodyReads, 1);
+          assert.deepStrictEqual(yield* fs.readFile(file), original);
+        }).pipe(
+          Effect.provide(TestProviderHost.layer({ settings })),
+          Effect.provideService(HostProcess.Environment, {}),
+          Effect.provideService(HostProcess.HomeDirectory, root),
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

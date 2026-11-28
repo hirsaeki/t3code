@@ -1,6 +1,14 @@
 {
   "customNotices": [
     {
+      "name": "Cursor SDK integration",
+      "version": "1.5.0",
+      "bundles": ["desktop", "server"],
+      "license": "Anysphere Terms of Service",
+      "sourceUrl": "https://cursor.com/terms-of-service",
+      "noticeFile": "third-party-licenses/cursor-sdk.NOTICE"
+    },
+    {
       "bundles": ["desktop", "mobile"],
       "license": "MIT",
       "name": "Apple Speech engine (adapted from @react-native-ai/apple)",

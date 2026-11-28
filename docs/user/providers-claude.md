@@ -89,6 +89,10 @@ Claude Code holds the turn until that window reopens, so it can keep showing as
 working. Wait for the reset, or stop the turn and continue later. The warning's
 timestamp shows when the displayed wait started.
 
+Manage any reset credits in Claude's own client. T3 does not extract Claude's OAuth
+credentials or offer reset-credit redemption. Native Claude SDK usage reporting and
+normal conversation authentication are unchanged.
+
 ## Steering
 
 A steer waits until Claude finishes the tool calls it is running, then Claude reads it

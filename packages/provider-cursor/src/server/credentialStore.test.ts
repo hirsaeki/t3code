@@ -7,6 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { ProviderCredentialError } from "@t3tools/provider-core/server/errors";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as Layer from "effect/Layer";
 import { makeCursorCredentialStore } from "./credentialStore.ts";
@@ -95,6 +96,41 @@ it.effect(
         "test-only-work-key",
       );
     }).pipe(Effect.provide(layerHost)),
+);
+
+it.effect("signing out removes a legacy credential retained after a failed migration", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const legacyFile = path.join(yield* fileSystem.makeTempDirectoryScoped(), "cursor.json");
+    yield* fileSystem.writeFileString(legacyFile, legacyFileText);
+    const host = yield* ProviderHost.ProviderHost;
+    const failingHost = ProviderHost.ProviderHost.of({
+      ...host,
+      credentials: (namespace, bindingId) =>
+        host.credentials(namespace, bindingId).pipe(
+          Effect.map((credentials) => ({
+            ...credentials,
+            set: () =>
+              Effect.fail(
+                new ProviderCredentialError({
+                  operation: "set",
+                  cause: new Error("test-only-migration-write-failure"),
+                }),
+              ),
+          })),
+        ),
+    });
+    const instanceId = ProviderInstanceId.make("personal");
+    const { store } = yield* makeCursorCredentialStore(instanceId, legacyFile).pipe(
+      Effect.provideService(ProviderHost.ProviderHost, failingHost),
+    );
+    assert.isTrue(yield* fileSystem.exists(legacyFile));
+    yield* Effect.promise(() => store.clear());
+    assert.isFalse(yield* fileSystem.exists(legacyFile));
+    const restarted = yield* makeCursorCredentialStore(instanceId, legacyFile);
+    assert.isUndefined(yield* Effect.promise(() => restarted.store.load()));
+  }).pipe(Effect.scoped, Effect.provide(layerHost)),
 );
 
 it.effect.each([

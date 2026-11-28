@@ -40,6 +40,7 @@ describe("AddUsageLimitSourceDialog", () => {
         "cliproxy-hub.example.ts.net-8318": expect.objectContaining({
           url: "https://hub.example.ts.net:8318",
           managementKey: "secret-key",
+          accountUsageEnabled: true,
         }),
       },
     });

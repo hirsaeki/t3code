@@ -73,6 +73,7 @@ export function AddUsageLimitSourceDialog({
           url: trimmedUrl,
           managementKey,
           enabled: true,
+          accountUsageEnabled: true,
         },
       },
     });
@@ -100,8 +101,9 @@ export function AddUsageLimitSourceDialog({
               </T>
             ) : (
               <T>
-                Show the quota of every account the hub pools, next to the providers on{" "}
-                <Var>{environmentLabel}</Var>. The key stays on that server.
+                Read the hub's account and model inventory from <Var>{environmentLabel}</Var>. The
+                hub manages its own provider credentials. Provider quotas are unavailable through
+                this connection.
               </T>
             )}
           </DialogDescription>

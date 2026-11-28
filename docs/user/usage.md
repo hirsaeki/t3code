@@ -6,10 +6,36 @@ desktop when the terminal is not focused. Press it again to close Usage. Customi
 
 On mobile, choose **Usage** in the workspace navigation.
 
+## Choose usage sources
+
+External history scans and account-wide usage are off until you enable them for a provider
+instance. On web or desktop, open **Settings → Providers**, choose the environment and instance,
+then use **External usage history** or **Account-wide usage**. The instance must also be enabled.
+These permissions are independent: local transcript scans do not authorize account requests,
+and account requests do not authorize scanning other local histories.
+
+**External usage history** reads the selected instance's configured native history. **Account-wide
+usage** allows supported account quota requests and Cursor account history, which can include work
+from other machines. Provider health and sign-in checks remain separate. Configure these permissions
+through web or desktop for each environment; mobile uses the same server policy.
+
+Turn either permission off to disable collection and clear its derived usage cache on that
+environment. Disabling or removing the instance also clears its account usage. Original agent
+transcripts and T3 conversations are preserved. When two selected instances share one history or
+account, its cache remains available to the instance that still has permission. Connect to a remote
+environment to change its permissions and clear its cache there.
+
+Hubs and HTTP quota sources have their own switch under **Settings → Providers → Usage providers**.
+Adding a source authorizes its described read requests; switching it off or removing it clears its
+current readings. Previously configured sources and instances start with usage permissions off
+after this update, and their unconsented derived caches are removed. Select the sources you want
+to collect again. Usage permissions do not import conversations; onboarding imports remain a
+separate selection.
+
 ## Understand your usage
 
 **Usage** combines Codex, Claude Code, Grok Build, OpenCode, Antigravity, Pi, Muse Code, and Cursor history
-from your connected environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
+from the sources and environments you select. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
 cost, split by token type and by speed. These estimates are not your subscription bill.
 **Premium** is what Fast and Ultrafast requests cost above standard rates. Cost that cannot be
 split, such as a provider-reported cost for a model without public rates, shows as **Other**.
@@ -20,23 +46,27 @@ record are missing from the totals.
 Text generation (thread titles, commit messages, PR text, branch names and review guides) is not in
 the totals for Codex or Claude Code 2.0.63 and newer, because those runs save no session history.
 
-The server keeps scanned usage history for 92 days by default. Claude Code deletes its own
-transcripts after 30 days, so for older Claude usage this history is the only record left. To keep
-it longer, set `usageHistoryRetentionDays` in `<T3 home>/userdata/settings.json` to a number of days
-such as `365`, or to `"unlimited"`. Usage views still show at most 90 days. Lowering the value
-prunes older history on the next refresh, and raising it again does not bring pruned history back.
-While `settings.json` cannot be read, nothing is pruned.
+The server keeps derived usage records for 92 days by default, based on each event's timestamp.
+Touching or updating a transcript does not extend an old record's retention. To change the window,
+set `usageHistoryRetentionDays` in `<T3 home>/userdata/settings.json` to a number of days such as
+`365`, or to `"unlimited"`. Usage views still show at most 90 days. Startup, settings changes and
+usage refreshes prune expired records and their cached identifiers. Deleted native files and roots
+are removed from derived history when the source is checked; the cache does not preserve deleted
+transcripts. Raising retention permits older records to be read again only if the selected source
+still has them. While settings cannot be read, existing derived records are not newly persisted.
 
 OpenCode reads its SQLite database and older JSON history. Antigravity reads local conversation
-databases, including T3-managed profiles. Set `OPENCODE_DATA_DIR` or `ANTIGRAVITY_DATA_DIR` on the
-server to read a different data directory; comma-separated paths read multiple directories.
+databases, including T3-managed profiles, after the corresponding instance is selected. Set
+`OPENCODE_DATA_DIR` or `ANTIGRAVITY_DATA_DIR` on the instance to choose another data directory;
+comma-separated paths select multiple directories. Antigravity backup and IDE roots are excluded
+from default discovery. Include one only by explicitly setting its path on a selected instance.
 
-Cursor reads account usage from Cursor's API for the account you signed in with in T3 or set as
+With **Account-wide usage** enabled, Cursor reads account usage from Cursor's API for the account you signed in with in T3 or set as
 `CURSOR_API_KEY`. This includes headless T3 sessions and desktop usage across machines; the same
 account counts once across connected environments. T3 does not estimate missing tokens from
 conversation text.
 
-Usage includes each configured account's history, including disabled accounts. Custom homes follow
+Usage includes only enabled instances with the corresponding usage permission. Custom homes follow
 the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment
 variable. Pi reads `~/.pi/agent/sessions`, or the `sessions` directory under
 `PI_CODING_AGENT_DIR`. Set `PI_CODING_AGENT_SESSION_DIR` to read a different session directory.
@@ -56,8 +86,10 @@ explicitly.
 When your app and server support different providers, usage totals may cover only the providers
 your app understands. Update the app to include newly supported providers.
 
-On web and desktop, use the environment dropdown to filter costs, tokens, and limits. All
-environments are selected by default. The dropdown shows which environments are still scanning;
+On web and desktop, use the environment dropdown to select costs, tokens, and limits. The current
+environment starts selected when available; otherwise choose an environment first. Other
+environments are queried only after you select them. On mobile, choose environments from the filter
+menu before usage is loaded. The dropdown shows which selected environments are still scanning;
 results appear as each one responds, and figures still updating are dimmed. Cursor shows its last
 saved totals first, then updates them when Cursor's API responds.
 
@@ -117,7 +149,7 @@ setting removes it from `settings.json`.
 
 ## Track subscription limits
 
-**Usage → Limits** pools every subscription account it can see per provider, so with several Codex
+**Usage → Limits** pools enabled accounts with **Account-wide usage** permission per provider, so with several Codex
 or Claude accounts across your enabled environments and hubs you read one number per window rather than a
 list. Each window card shows how much of the pool is left and a bar with one segment per account,
 kept in the same column across windows. Accounts are ordered by their next 5-hour refill, soonest
@@ -126,10 +158,10 @@ The first available window is used when no account reports a 5-hour limit. A gap
 account does not report that window. When the provider reports reset times, the card also says
 when the next reset lands and how much it hands back. The hatched
 part of a segment is what that reset restores. Tap a segment or account row for the account's plan,
-where it is signed in, and its reset time. On web, you can hover too. Codex and Claude accounts
+where it is signed in, and its reset time. On web, you can hover too. Native Codex accounts
 with banked reset credits show a ticket count and the **Use reset** action in the account details.
-Claude resets are not available when the server runs on macOS, where Claude keeps its login in the
-Keychain. On narrow screens, numbered rows below
+Claude and hub accounts do not offer reset-credit redemption. Manage those accounts in their
+native clients. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
 
 The same account signed in on more than one environment, or reported by a hub as well, counts once.
@@ -143,7 +175,9 @@ model-specific weekly allowances keep their reported values.
 
 Opening Limits checks the selected connected environments automatically. Each client waits at
 least five minutes between automatic checks of an environment, including after a failed check.
-If a window still looks stale, refresh Limits to re-check every provider and hub.
+If a window still looks stale, refresh Limits to re-check the selected, opted-in providers and sources.
+A failed account probe may show an explicitly labeled previous reading for the same known account;
+unknown identities, sign-out and account changes cannot reuse another account's quota.
 
 Pick `/usage-limits` from the composer's command menu, or send it as a message, to check the
 current model's limits without leaving the conversation. The result opens above the composer and
@@ -183,15 +217,14 @@ using a proxy through `ANTHROPIC_AUTH_TOKEN`.
 To see pooled accounts, open **Settings → Providers → Usage providers → Add hub**. Choose the
 environment that will connect to the hub and enter its URL and management key.
 
-The hub's Codex, Claude, xAI (shown as Grok) and Antigravity accounts appear under **Usage → Limits**;
-accounts for other providers are not read. Codex accounts show banked reset credits; select an
-account and choose **Use reset** to redeem one. No hub plugin is required.
+T3 reads the hub's documented account and model inventory for Codex, Claude, xAI
+(shown as Grok), and Antigravity. Account quotas and reset credits are unavailable:
+T3 does not ask the hub to call private provider endpoints or impersonate a provider client.
 
-This connection supplies usage information; configure
-the provider separately to send agent requests through the hub. A thread uses the hub's limits and
-reset times only when its provider's endpoint has the same address as the hub, for example
-`http://127.0.0.1:8317` for both. Remove the hub from the same settings section when you no longer
-need it.
+The hub independently controls its configured credentials. Its management key grants access
+to that account inventory, so only connect a hub you intend to authorize. Configure the
+provider separately if you want agent requests to pass through it. Remove the hub from the
+same settings section when you no longer need its inventory.
 
 ## Connect an HTTP quota source
 

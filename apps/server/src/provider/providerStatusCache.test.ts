@@ -7,8 +7,16 @@ import {
 } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 
-import { hydrateCachedProvider, isCachedProviderCorrelated } from "./providerStatusCache.ts";
+import {
+  clearCachedProviderUsage,
+  hydrateCachedProvider,
+  isCachedProviderCorrelated,
+  writeProviderStatusCache,
+} from "./providerStatusCache.ts";
 
 const emptyCapabilities = createModelCapabilities({ optionDescriptors: [] });
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
@@ -208,4 +216,44 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
       fallbackCodex,
     );
   });
+
+  it.effect(
+    "removes legacy quotas from removed instance caches and excludes them from new status writes",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "provider-status-usage-" });
+        const filePath = path.join(directory, "removed-instance.json");
+        const unrelated = path.join(directory, "other-cache.json");
+        const provider: ServerProvider = {
+          instanceId: ProviderInstanceId.make("removed-instance"),
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          installed: true,
+          version: "1.0.0",
+          status: "ready",
+          auth: { status: "authenticated", email: "account@example.test" },
+          checkedAt: "2026-11-01T00:00:00.000Z",
+          models: [],
+          slashCommands: [],
+          skills: [],
+          usageLimits: {
+            checkedAt: "2026-11-01T00:00:00.000Z",
+            windows: [
+              { id: "old-account-quota", kind: "monthly", label: "Monthly", usedPercent: 75 },
+            ],
+          },
+        };
+        yield* fs.writeFileString(filePath, JSON.stringify(provider));
+        yield* fs.writeFileString(unrelated, '{"keep":"unchanged"}');
+        yield* clearCachedProviderUsage(directory);
+        const migrated = JSON.parse(yield* fs.readFileString(filePath));
+        assert.isUndefined(migrated.usageLimits);
+        assert.deepStrictEqual(migrated.auth, provider.auth);
+        assert.strictEqual(yield* fs.readFileString(unrelated), '{"keep":"unchanged"}');
+        yield* writeProviderStatusCache({ filePath, provider });
+        assert.notInclude(yield* fs.readFileString(filePath), "old-account-quota");
+      }).pipe(Effect.scoped),
+  );
 });

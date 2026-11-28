@@ -150,7 +150,6 @@ export function WelcomePage({
     canShare: canReadRelay && canWriteRelay,
     policy: useManagedPolicy(environmentId),
   });
-  const scans = useProjectScans([environmentId]);
   const [storedSelection, storeSelection] = useLocalStorage(
     welcomeImportSelectionKey(environmentId),
     null,
@@ -158,6 +157,11 @@ export function WelcomePage({
   );
   // The page keeps its own copy, so a failed write (a full quota) cannot undo a choice.
   const [importSelection, setImportSelectionState] = useState(storedSelection);
+  const [discoverProjects, setDiscoverProjects] = useState(
+    storedSelection !== null && !storedSelection.optedOut,
+  );
+  const canImportProjects = useEnvironmentScope(environmentId, AuthOrchestrationOperateScope);
+  const scans = useProjectScans(discoverProjects && canImportProjects ? [environmentId] : []);
   const setImportSelection = (next: WelcomeImportSelection | null) => {
     setImportSelectionState(next);
     storeSelection(next);
@@ -302,6 +306,8 @@ export function WelcomePage({
                 scan={scans[0]}
                 projectImport={projectImport}
                 isImporting={isImporting}
+                canDiscover={canImportProjects}
+                onDiscover={() => setDiscoverProjects(true)}
               />
               {showPhone ? <PhoneSection environmentId={environmentId} /> : null}
             </div>
@@ -799,10 +805,14 @@ function ProjectsSection({
   scan,
   projectImport,
   isImporting,
+  canDiscover,
+  onDiscover,
 }: {
   readonly scan: ReturnType<typeof useProjectScans>[number] | undefined;
   readonly projectImport: ReturnType<typeof useProjectImport>;
   readonly isImporting: boolean;
+  readonly canDiscover: boolean;
+  readonly onDiscover: () => void;
 }) {
   const gt = useGT();
   const m = useMessages();
@@ -818,7 +828,30 @@ function ProjectsSection({
     setSelectedKeys,
     visibleImportError,
   } = projectImport;
-  if (scan === undefined) return null;
+  if (scan === undefined) {
+    return (
+      <WelcomeSection title={gt("Projects")}>
+        <div className="space-y-2 py-2">
+          <p className="text-sm text-muted-foreground">
+            <T>
+              Read this computer's agent history to choose projects and conversations to import.
+            </T>
+          </p>
+          {!canDiscover ? (
+            <p className="text-sm text-destructive">{m(IMPORT_PERMISSION_MESSAGE)}</p>
+          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!canDiscover || isImporting}
+            onClick={onDiscover}
+          >
+            <T>Find projects in agent history</T>
+          </Button>
+        </div>
+      </WelcomeSection>
+    );
+  }
   if (scan.isPending && candidates.length === 0) {
     return (
       <WelcomeSection title={gt("Projects")}>
@@ -1533,16 +1566,10 @@ function useProjectImport({
   const isNewProject = isNewOnboardingProject(projects);
   const isNew = (candidate: ImportCandidate) => isNewProject(candidate.environmentId, candidate);
   const recent = recentActive.filter(isNew);
-  const recentKeys = new Set(recent.map((candidate) => candidate.key));
-  const knownKeys = new Set(importSelection?.knownKeys);
   const pickedKeys = new Set(importSelection?.keys);
   const selected = importSelection?.optedOut
     ? []
-    : candidates.filter((candidate) =>
-        knownKeys.has(candidate.key)
-          ? pickedKeys.has(candidate.key)
-          : recentKeys.has(candidate.key),
-      );
+    : candidates.filter((candidate) => pickedKeys.has(candidate.key));
   const selectedKeys = new Set(selected.map((candidate) => candidate.key));
   const setSelectedKeys = (keys: ReadonlySet<string>, { optedOut = false } = {}) =>
     onImportSelectionChange({

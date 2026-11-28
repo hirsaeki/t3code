@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
@@ -18,6 +19,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as sdk from "./sdk.ts";
@@ -27,7 +29,17 @@ vi.mock("./sdk.ts", { spy: true });
 
 const layerTest = TestProviderHost.layer({
   runBackgroundWork: false,
-  settings: { ...DEFAULT_SERVER_SETTINGS, enableProviderUpdateChecks: false },
+  settings: {
+    ...DEFAULT_SERVER_SETTINGS,
+    enableProviderUpdateChecks: false,
+    providerInstances: {
+      [ProviderInstanceId.make("muse-test")]: {
+        driver: ProviderDriverKind.make("muse"),
+        enabled: true,
+        accountUsageEnabled: true,
+      },
+    },
+  },
 }).pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(IdAllocator.layer),
@@ -101,7 +113,7 @@ function nativeHost() {
 
 it.layer(layerTest)("MuseDriver usage", (it) => {
   it.effect(
-    "keeps the newest complete account report across late reports and refresh without probing for usage",
+    "orders native usage, clears it on unverified refresh, and ignores revoked reports",
     () =>
       Effect.gen(function* () {
         const hosts: ReturnType<typeof nativeHost>[] = [];
@@ -209,8 +221,34 @@ it.layer(layerTest)("MuseDriver usage", (it) => {
         yield* instance.snapshot.refreshUsage!;
         expect(spawn.mock.calls.length).toBe(callsBeforeUsageRefresh);
         const refreshed = yield* instance.snapshot.refresh;
-        expect(refreshed.usageLimits).toEqual(latest.usageLimits);
-        expect(refreshed.auth.label).toBe("tier-2");
+        expect(refreshed.auth.status).toBe("unknown");
+        expect(refreshed.usageLimits).toBeUndefined();
+        expect(refreshed.auth.label).toBeUndefined();
+
+        const host = yield* ProviderHost.ProviderHost;
+        const settings = yield* host.settings.get;
+        const hostSettings = yield* TestProviderHost.TestProviderHostSettings;
+        yield* hostSettings.set({
+          ...settings,
+          providerInstances: {
+            ...settings.providerInstances,
+            [instanceId]: {
+              ...settings.providerInstances[instanceId]!,
+              accountUsageEnabled: false,
+            },
+          },
+        });
+        yield* publish(1, reading(1791447764610, 90, "revoked-tier"));
+        expect((yield* instance.snapshot.getSnapshot).usageLimits).toBeUndefined();
+        expect((yield* instance.snapshot.getSnapshot).auth.label).toBeUndefined();
+        yield* hostSettings.set(settings);
+        const reselected = yield* instance.snapshot.refresh;
+        expect(reselected.usageLimits).toBeUndefined();
+        expect(reselected.auth.label).toBeUndefined();
+        yield* publish(0, reading(1791447763610, 20, "tier-3"));
+        const resumed = yield* instance.snapshot.getSnapshot;
+        expect(resumed.usageLimits?.windows.map((window) => window.usedPercent)).toEqual([20, 50]);
+        expect(resumed.auth.label).toBe("tier-3");
       }),
   );
 });

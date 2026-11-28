@@ -122,7 +122,13 @@ const makeLayerTest = (runBackgroundWork: boolean) =>
         shouldRunScopeWork: () => Effect.succeed(runBackgroundWork),
       }),
     ),
-    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(
+      ServerSettings.layerTest({
+        providerInstances: {
+          [instanceId]: { driver, enabled: true, accountUsageEnabled: true },
+        },
+      }),
+    ),
     Layer.provideMerge(ServerSecretStore.layer),
     Layer.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-antigravity-provider-test-" }).pipe(
@@ -821,9 +827,14 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
           ],
         };
         const usage = yield* Ref.make(limits);
-        const harness = yield* makeHarness({ probeUsage: Ref.get(usage) });
+        const allowRead = yield* Deferred.make<void>();
+        const harness = yield* makeHarness({
+          probeUsage: Deferred.await(allowRead).pipe(Effect.andThen(Ref.get(usage))),
+        });
         const published = yield* harness.nextPublish((snapshot) => !!snapshot.usageLimits);
         yield* harness.initialize;
+        yield* harness.provider.onSessionStarted(started);
+        yield* Deferred.succeed(allowRead, undefined);
         expect((yield* published)?.usageLimits).toEqual(limits);
         // The second health check is the one the failed background read triggers.
         const checks = yield* Ref.make(0);
@@ -855,7 +866,8 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
         const unsupported = yield* harness.nextPublish(
           (snapshot) => snapshot.usageLimits?.unavailable?.reason === "unsupported",
         );
-        yield* harness.provider.snapshot.refresh;
+        yield* harness.provider.onSignedIn;
+        yield* harness.provider.onSessionStarted(started);
         expect((yield* unsupported)?.usageLimits?.windows).toEqual([]);
       }),
   );

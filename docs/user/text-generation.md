@@ -30,6 +30,13 @@ and refreshes the list after the service adds some.
 
 Each request sends the API what the task needs, such as the staged diff for a commit message.
 
+When the selected coding agent has reached a reported usage limit, text generation stops with an
+error. It does not automatically switch to another subscription account. Wait for the limit to
+reset, explicitly choose another account, or select a separately configured API text generator.
+
+The fallback model for new threads can use another available model on the same provider account.
+It cannot automatically switch accounts when a usage limit is reached.
+
 Turning a generator off or removing it sends its work back to the environment's text generation
 model.
 

@@ -64,6 +64,7 @@ import * as ResetCreditCoordinator from "./resetCreditCoordinator.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
+import * as CursorUsageAccounts from "@t3tools/provider-cursor/server/CursorUsageAccounts";
 import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderInstallationGate from "./ProviderInstallationGate.ts";
@@ -94,6 +95,12 @@ import * as ProviderHostPathWatcher from "./ProviderHostPathWatcher.ts";
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { providerHostEnvironment } from "../policy/managedProviders.ts";
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
+
+const layerUnusedCursorUsage = Layer.succeed(CursorUsageAccounts.CursorUsageAccounts, {
+  scan: () => Effect.succeed([]),
+  awaitPersisted: Effect.void,
+  invalidate: () => Effect.void,
+});
 
 const decodeServerProvider = Schema.decodeSync(ServerProvider);
 const encodeServerProvider = Schema.encodeSync(ServerProvider);
@@ -1000,7 +1007,13 @@ it.layer(
             });
           }),
         );
-        const fiber = yield* checkCodexProviderStatus(defaultCodexSettings).pipe(
+        const fiber = yield* checkCodexProviderStatus(
+          defaultCodexSettings,
+          undefined,
+          undefined,
+          undefined,
+          Effect.succeed(true),
+        ).pipe(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.forkChild,
         );
@@ -4383,6 +4396,7 @@ it.layer(
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(
             ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provide(layerUnusedCursorUsage),
               Layer.provide(
                 Layer.mergeAll(
                   PortScanner.layerTest,
@@ -4509,6 +4523,7 @@ it.layer(
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(
             ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provide(layerUnusedCursorUsage),
               Layer.provide(
                 Layer.mergeAll(
                   PortScanner.layerTest,
@@ -4652,6 +4667,7 @@ it.layer(
       readSeed = false;
       const services = yield* Layer.build(
         ProviderInstanceRegistryHydration.layer.pipe(
+          Layer.provide(layerUnusedCursorUsage),
           Layer.provide(
             Layer.mergeAll(
               PortScanner.layerTest,

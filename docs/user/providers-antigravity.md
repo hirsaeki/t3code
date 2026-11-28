@@ -154,9 +154,9 @@ T3 does not support Antigravity goal status, pause, resume, or clear commands.
 
 ## Check access and troubleshoot
 
-Open **Usage > Limits** to see the remaining Gemini and shared Claude/GPT allowances
-for Google sign-ins. Each group has separate five-hour and weekly limits and reset
-times. Limits refresh with provider status and include usage outside T3 Code.
+Antigravity account limits are unavailable in **Usage > Limits** because its native
+ACP interface does not report them. Check your allowances in Google's own client.
+T3 does not read Antigravity's OAuth tokens or OS keyring to obtain quotas.
 
 A server restart keeps your Google sign-in. The provider shows the saved account
 until a session, a refresh, or a sign-out reports something new.
@@ -164,6 +164,9 @@ until a session, a refresh, or a sign-out reports something new.
 To check access and reload models, use **Refresh provider status** in web or desktop
 provider settings, or **Refresh models** in mobile thread settings. If asked to
 sign in again, use provider settings on web or desktop, or **Settings > Providers** on mobile.
+
+T3 identifies itself as T3 Code to every Antigravity version. Older releases may
+therefore offer fewer models; update Antigravity to use the models it supports for T3.
 
 If Google reports `SUBSCRIPTION_REQUIRED`, an account restriction, or a usage limit,
 follow the provider's message and any retry time. See [Google's account plans][plans]

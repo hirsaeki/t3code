@@ -1,4 +1,4 @@
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { isProviderAccountUsageEnabled, ProviderDriverKind } from "@t3tools/contracts";
 import { GrokSettings } from "../settings.ts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
@@ -216,12 +216,20 @@ export const GrokDriver: ProviderDriver<GrokSettings, GrokDriverEnv, Path.Path> 
             snapshot.auth.status === "authenticated"
           ),
         (snapshot) =>
-          readGrokAccount(processEnv).pipe(
-            Effect.map(({ email, usageLimits }) => ({
-              ...snapshot,
-              auth: email ? { ...snapshot.auth, email } : snapshot.auth,
-              usageLimits,
-            })),
+          host.settings.get.pipe(
+            Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
+            Effect.orElseSucceed(() => false),
+            Effect.flatMap((allowed) =>
+              !allowed
+                ? Effect.succeed(snapshot)
+                : readGrokAccount(processEnv).pipe(
+                    Effect.map(({ email, usageLimits }) => ({
+                      ...snapshot,
+                      auth: email ? { ...snapshot.auth, email } : snapshot.auth,
+                      usageLimits,
+                    })),
+                  ),
+            ),
           ),
       ),
       Effect.map(stampIdentity),

@@ -37,6 +37,7 @@ import { refreshPathFromLoginShell, refreshWindowsPath } from "../os-jank.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import {
+  clearCachedProviderUsage,
   hydrateCachedProvider,
   isCachedProviderCorrelated,
   orderProviderSnapshots,
@@ -462,6 +463,7 @@ export const layer = Layer.effect(
       PubSub.shutdown,
     );
 
+    yield* clearCachedProviderUsage(config.providerStatusCacheDir);
     const bootInstances = yield* instanceRegistry.listInstances;
     const bootSources = bootInstances.map(buildSnapshotSource);
     const fallbackProviders = yield* loadProviders(bootSources);

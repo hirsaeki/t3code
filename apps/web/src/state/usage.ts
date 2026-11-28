@@ -33,7 +33,9 @@ export interface EnvironmentUsageStatus {
 
 const usageByWindowAtom = Atom.family((windowKey: string) =>
   Atom.make((get): readonly EnvironmentUsageStatus[] => {
-    const input = JSON.parse(windowKey) as UsageSummaryInput;
+    const { selectedEnvironmentIds, ...input } = JSON.parse(windowKey) as UsageSummaryInput & {
+      readonly selectedEnvironmentIds: readonly EnvironmentId[] | null;
+    };
     const presentations = get(environmentPresentations.presentationsAtom);
 
     const statuses: EnvironmentUsageStatus[] = [];
@@ -45,12 +47,15 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         session: AsyncResult.getOrElse(sessionResult, () => null),
         hasSessionError: sessionResult._tag === "Failure",
       });
-      if (!access.canReadDiagnostics) {
+      const selected =
+        selectedEnvironmentIds === null || selectedEnvironmentIds.includes(environmentId);
+      if (!access.canReadDiagnostics || !selected) {
         statuses.push({
           environmentId,
           label: presentation.entry.target.label,
           isConnected,
           ...access,
+          isPending: selected && access.isPending,
           summary: null,
         });
         continue;
@@ -166,6 +171,8 @@ export function useUsage(
     resolution: input.resolution,
     sinceTime: input.sinceTime,
     untilTime: input.untilTime,
+    selectedEnvironmentIds:
+      selectedEnvironmentIds === null ? null : Array.from(selectedEnvironmentIds).sort(),
   });
   const atom = usageByWindowAtom(windowKey);
   const environments = useAtomValue(atom);
@@ -196,7 +203,7 @@ export function useUsage(
             readEnvironmentScope(environment.environmentId, AuthDiagnosticsReadScope),
         )
         .map(({ environmentId }) => environmentId),
-      input: nextInput ?? (JSON.parse(windowKey) as UsageSummaryInput),
+      input: nextInput ?? input,
     });
 
   const answeredCount = selectedEnvironments.filter(

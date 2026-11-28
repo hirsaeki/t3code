@@ -119,6 +119,15 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     : null;
 
   const modelDisabledReason = useScopedModelDisabledReason(settings, entries);
+  const fallbackModelDisabledReason = (
+    instanceId: ModelSelection["instanceId"],
+    model: ModelSelection["model"],
+  ) => {
+    if (mixedModel) return gt("Choose a shared default account before setting a fallback model.");
+    if (instanceId !== selection?.instanceId)
+      return gt("Choose a fallback model from the same provider account as the default model.");
+    return modelDisabledReason(instanceId, model);
+  };
   const effortDisabledReason = selection
     ? modelDisabledReason(selection.instanceId, selection.model)
     : null;
@@ -275,7 +284,17 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       settingKeys={["fallbackModelSelection"]}
       mixed={mixedFallback}
       {...searchableSetting("fallback-model")}
-      description={gt("Used for new threads when the default model's provider is out of usage.")}
+      description={gt(
+        "For new threads, use another model on the same provider account when the default model's allowance is exhausted.",
+      )}
+      status={
+        settings.fallbackModelSelection
+          ? fallbackModelDisabledReason(
+              settings.fallbackModelSelection.instanceId,
+              settings.fallbackModelSelection.model,
+            )
+          : null
+      }
       resetAction={
         mixedFallback || settings.fallbackModelSelection !== null ? (
           <SettingResetButton
@@ -301,9 +320,9 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 : settings.fallbackModelSelection === null
                   ? { triggerLabel: gt("None", { $context: "no fallback model" }) }
                   : {})}
-              getModelDisabledReason={modelDisabledReason}
+              getModelDisabledReason={fallbackModelDisabledReason}
               onInstanceModelChange={(instanceId, model) => {
-                const reason = modelDisabledReason(instanceId, model);
+                const reason = fallbackModelDisabledReason(instanceId, model);
                 if (reason) {
                   toastManager.add({
                     type: "error",
@@ -321,7 +340,10 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
                 });
               }}
             />
-            {settings.fallbackModelSelection !== null && fallbackEntry && !mixedFallback ? (
+            {settings.fallbackModelSelection !== null &&
+            fallbackEntry &&
+            !mixedFallback &&
+            !fallbackModelDisabledReason(fallbackSelection.instanceId, fallbackSelection.model) ? (
               <TraitsPicker
                 provider={fallbackEntry.driverKind}
                 models={fallbackEntry.models}

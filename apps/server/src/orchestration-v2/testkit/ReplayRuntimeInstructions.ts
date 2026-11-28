@@ -57,13 +57,6 @@ export function materializeReplayTranscriptRuntimeInstructions(
     | undefined;
   let pendingKiroCompact: { readonly sessionId: unknown } | undefined;
   const cursorSessionKey = "cursor";
-  let cursorAgentId: string | undefined;
-  let interruptedCursorNotes:
-    | {
-        readonly agentId: string | undefined;
-        readonly notes: string;
-      }
-    | undefined;
   let pendingCursorRun:
     | {
         readonly notes: string | undefined;
@@ -78,21 +71,12 @@ export function materializeReplayTranscriptRuntimeInstructions(
       if (entry.type === "emit_inbound") {
         const frame = asFrame(entry.frame);
         if (runtime.driver === "cursor") {
-          if (
-            (frame?.type === "agent.opened" || frame?.type === "run.started") &&
-            typeof frame.agentId === "string"
-          ) {
-            cursorAgentId = frame.agentId;
-          }
           const cursorUpdate =
             frame?.type === "interaction.update" && isRecord(frame.update)
               ? frame.update
               : undefined;
           if (cursorUpdate?.type === "summary-completed" && cursorUpdate.failed !== true) {
             deliveredNotes.delete(cursorSessionKey);
-            if (interruptedCursorNotes?.agentId === cursorAgentId) {
-              interruptedCursorNotes = undefined;
-            }
             if (pendingCursorRun !== undefined) pendingCursorRun.compacted = true;
           }
           if (frame?.type === "run.completed" && pendingCursorRun !== undefined) {
@@ -105,17 +89,10 @@ export function materializeReplayTranscriptRuntimeInstructions(
               pendingCursorRun.notes !== undefined
             ) {
               deliveredNotes.set(cursorSessionKey, pendingCursorRun.notes);
-              interruptedCursorNotes = undefined;
             } else if (status !== "finished") {
               if (pendingCursorRun.notes !== undefined) {
                 deliveredNotes.delete(cursorSessionKey);
               }
-              interruptedCursorNotes =
-                status === "cancelled" &&
-                !pendingCursorRun.compacted &&
-                pendingCursorRun.notes !== undefined
-                  ? { agentId: cursorAgentId, notes: pendingCursorRun.notes }
-                  : undefined;
             }
             pendingCursorRun = undefined;
           }
@@ -181,21 +158,7 @@ export function materializeReplayTranscriptRuntimeInstructions(
       if (runtime.driver === "cursor" && "type" in frame) {
         if (frame.type === "agent.close") {
           deliveredNotes.clear();
-          cursorAgentId = undefined;
-          interruptedCursorNotes = undefined;
           pendingCursorRun = undefined;
-          return entry;
-        }
-        if (frame.type === "run.resume") {
-          pendingCursorRun = {
-            notes:
-              interruptedCursorNotes !== undefined &&
-              interruptedCursorNotes.agentId === cursorAgentId
-                ? interruptedCursorNotes.notes
-                : undefined,
-            compact: false,
-            compacted: false,
-          };
           return entry;
         }
         if (frame.type === "run.start") {
@@ -220,7 +183,6 @@ export function materializeReplayTranscriptRuntimeInstructions(
               model === runtime.model ? instructions : buildRuntimeInstructions({ harness, model });
             const recorded = frame.message.endsWith(expected);
             const resend = !recorded && deliveredNotes.get(cursorSessionKey) !== expected;
-            interruptedCursorNotes = undefined;
             pendingCursorRun = {
               notes: recorded || resend ? expected : undefined,
               compact: false,

@@ -26,6 +26,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Scope from "effect/Scope";
@@ -566,6 +567,16 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
 
       const fixtures = yield* makeTildeProviderFixtures();
       const claudeId = ProviderInstanceId.make("claude_settings_unsupported");
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({
+        providerInstances: {
+          [claudeId]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            enabled: true,
+            accountUsageEnabled: true,
+          },
+        },
+      });
       const { registry } = yield* makeProviderInstanceRegistry<ClaudeDriverEnv>({
         drivers: [ClaudeDriver],
         configMap: {
@@ -611,6 +622,18 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
         JSON.stringify({ oauthAccount: { organizationUuid: "org-a" } }),
       );
       const claudeId = ProviderInstanceId.make("claude_probe_recovery");
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({
+        // Expire the probe cache without a periodic check consuming its one-use fallback.
+        providerHealthRefreshInterval: Duration.zero,
+        providerInstances: {
+          [claudeId]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            enabled: true,
+            accountUsageEnabled: true,
+          },
+        },
+      });
       let probeCount = 0;
       let successfulProbeCount = 0;
       let failProbe = false;
@@ -706,8 +729,7 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       const recoveredProbeCount = probeCount;
       expect(recoveredProbeCount).toBeGreaterThan(failedProbeCount);
 
-      yield* TestClock.adjust("1 second");
-      yield* claude!.invalidateCaches ?? Effect.void;
+      yield* TestClock.adjust("5 minutes");
       failProbe = true;
       const sameAccountFailure = yield* claude!.snapshot.refresh;
       expect(sameAccountFailure).toMatchObject({
@@ -733,96 +755,55 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
-  const redeemClaudeReset = (claim: { result: string; usageFailsAfterClaim: boolean }) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const fixtures = yield* makeTildeProviderFixtures();
-      const marker = path.join(fixtures.claudeHomePath, "redeemed");
-      yield* fs.writeFileString(
-        path.join(fixtures.claudeHomePath, ".credentials.json"),
-        '{"claudeAiOauth":{"accessToken":"fake-token"}}',
-      );
-      yield* fs.writeFileString(
-        path.join(fixtures.claudeHomePath, ".claude.json"),
-        '{"oauthAccount":{"organizationUuid":"fake-org"}}',
-      );
-      const client = HttpClient.make((request) =>
-        Effect.gen(function* () {
-          if (request.url.endsWith("/api/oauth/usage")) {
-            return HttpClientResponse.fromWeb(
-              request,
-              Response.json({
-                cedar_ember: {
-                  eligible: true,
-                  next_grant_id: "grant_a",
-                  grants: [{ id: "grant_a", resets_left: 1, usable_now: true }],
-                },
-              }),
-            );
-          }
-          if (request.url.endsWith("/reset_rate_limits")) {
-            yield* fs.writeFileString(marker, "redeemed").pipe(Effect.orDie);
-            return HttpClientResponse.fromWeb(request, Response.json({ result: claim.result }));
-          }
-          return HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" }));
-        }),
-      );
-      const instanceId = ProviderInstanceId.make("claude_reset");
-      const { registry } = yield* makeProviderInstanceRegistry({
-        drivers: [ClaudeDriver],
-        configMap: {
+  it.live.skipIf(windowsHost)(
+    "does not expose Claude reset credits or call private OAuth APIs",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixtures = yield* makeTildeProviderFixtures();
+        yield* fs.writeFileString(
+          path.join(fixtures.claudeHomePath, ".credentials.json"),
+          '{"claudeAiOauth":{"accessToken":"synthetic-test-token"}}',
+        );
+        yield* fs.writeFileString(
+          path.join(fixtures.claudeHomePath, ".claude.json"),
+          '{"oauthAccount":{"organizationUuid":"synthetic-test-org"}}',
+        );
+        const requests: Array<string> = [];
+        const client = HttpClient.make((request) => {
+          requests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, Response.json({ version: "0.0.0" })),
+          );
+        });
+        const instanceId = ProviderInstanceId.make("claude_reset");
+        const configMap: ProviderInstanceConfigMap = {
           [instanceId]: {
             driver: ProviderDriverKind.make("claudeAgent"),
             enabled: true,
-            environment: [
-              { name: "T3_CLAUDE_RESET_MARKER", value: marker, sensitive: false },
-              ...(claim.usageFailsAfterClaim
-                ? [{ name: "T3_CLAUDE_USAGE_FAILS_AFTER_CLAIM", value: "1", sensitive: false }]
-                : []),
-            ],
+            accountUsageEnabled: true,
             config: makeClaudeConfig({
               enabled: true,
               binaryPath: fixtures.claudeBinaryPath,
               homePath: fixtures.claudeHomePath,
             }),
           },
-        },
-      }).pipe(Effect.provideService(HttpClient.HttpClient, client));
-      const instance = yield* registry.getInstance(instanceId);
-      expect(instance).toBeDefined();
-      const before = yield* instance!.snapshot.refresh;
-      expect(before.usageLimits?.windows[0]?.usedPercent).toBe(100);
-      expect(before.usageLimits?.resetCredits?.nextCreditId).toBe("grant_a");
-      const outcome = yield* instance!.consumeResetCredit!(undefined).pipe(Effect.result);
-      return { outcome, after: yield* instance!.snapshot.getSnapshot };
-    }).pipe(
-      // macOS logins live in the Keychain, where resets are never read.
-      Effect.provideService(HostProcess.Platform, "linux"),
-      Effect.provide(layerTest),
-    );
-
-  it.live.skipIf(windowsHost)("refreshes Claude usage after redeeming a reset", () =>
-    Effect.gen(function* () {
-      const { outcome, after } = yield* redeemClaudeReset({
-        result: "reset",
-        usageFailsAfterClaim: false,
-      });
-      expect(outcome).toMatchObject({ _tag: "Success", success: "reset" });
-      expect(after.usageLimits?.windows[0]?.usedPercent).toBe(0);
-    }),
-  );
-
-  it.live.skipIf(windowsHost)(
-    "reports Claude's answer when a claim changed nothing and the re-probe fails",
-    () =>
-      Effect.gen(function* () {
-        const { outcome } = yield* redeemClaudeReset({
-          result: "already_used",
-          usageFailsAfterClaim: true,
-        });
-        expect(outcome).toMatchObject({ _tag: "Success", success: "alreadyRedeemed" });
-      }),
+        };
+        const settings = yield* ServerSettings.ServerSettingsService;
+        yield* settings.updateSettings({ providerInstances: configMap });
+        const { registry } = yield* makeProviderInstanceRegistry({
+          drivers: [ClaudeDriver],
+          configMap,
+        }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+        const instance = yield* registry.getInstance(instanceId);
+        expect(instance).toBeDefined();
+        const snapshot = yield* instance!.snapshot.refresh;
+        expect(snapshot.usageLimits?.windows[0]?.usedPercent).toBe(100);
+        expect(snapshot.usageLimits?.resetCredits).toBeUndefined();
+        expect(instance!.consumeResetCredit).toBeUndefined();
+        expect(requests.some((url) => new URL(url).hostname === "api.anthropic.com")).toBe(false);
+      }).pipe(Effect.provide(layerTest)),
   );
 
   const makeClaudeCacheFixture = Effect.fnUntraced(function* (
@@ -834,6 +815,16 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
     const recovered = path.join(fixtures.claudeHomePath, "recovered");
     const probeLog = path.join(fixtures.claudeHomePath, "probes.log");
     const instanceId = ProviderInstanceId.make("claude_cache");
+    const settings = yield* ServerSettings.ServerSettingsService;
+    yield* settings.updateSettings({
+      providerInstances: {
+        [instanceId]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          enabled: true,
+          accountUsageEnabled: true,
+        },
+      },
+    });
     const { registry } = yield* makeProviderInstanceRegistry({
       drivers: [ClaudeDriver],
       configMap: {

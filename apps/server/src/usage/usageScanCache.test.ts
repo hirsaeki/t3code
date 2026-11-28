@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   decodeScanCache,
   makeScanCacheWriter,
+  pruneScanCache,
   type CachedFile,
   type ScanCache,
 } from "./usageScanCache.ts";
@@ -60,6 +61,46 @@ function cacheWith(entries: readonly [string, number, readonly UsageRecord[]][])
 }
 
 describe("scan cache round trip", () => {
+  it("prunes records by timestamp and reclaims expired interned identifiers on the next write", () => {
+    const old = record({
+      timestampMs: 1_000,
+      model: "expired-model",
+      sessionId: "expired-session",
+    });
+    const recent = record({
+      timestampMs: 3_000,
+      model: "recent-model",
+      sessionId: "recent-session",
+    });
+    const cache = cacheWith([
+      ["/touched.jsonl", 4_000, [old, recent]],
+      ["/old-mtime.jsonl", 100, [recent]],
+      ["/expired.jsonl", 4_000, [old]],
+    ]);
+    cache.set("/touched.jsonl", {
+      ...cache.get("/touched.jsonl")!,
+      tailRecords: [old, recent],
+      malformedRecords: [1_000, 3_000],
+      position: position({ state: { sessionId: "expired-session", model: "expired-model" } }),
+    });
+    const write = makeScanCacheWriter();
+    expect(parse(write(cache, {})).sessions).toContain("expired-session");
+
+    expect(pruneScanCache(cache, 2_000)).toBe(2);
+    expect(cache.has("/expired.jsonl")).toBe(false);
+    expect(cache.get("/old-mtime.jsonl")?.records).toEqual([recent]);
+    expect(cache.get("/touched.jsonl")).toMatchObject({
+      records: [recent],
+      tailRecords: [recent],
+      malformedRecords: [3_000],
+      position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+    });
+    const document = parse(write(cache, {}));
+    expect(document.models).toEqual(["recent-model"]);
+    expect(document.sessions).toEqual(["recent-session"]);
+    expect(pruneScanCache(cache, 2_000)).toBe(0);
+  });
+
   it("restores cached history unchanged except for Claude local placeholders", () => {
     const original = cacheWith([
       [
@@ -372,7 +413,7 @@ describe("scan cache round trip", () => {
     },
   );
 
-  it("rewrites only changed entries and still restores the whole cache", () => {
+  it("rewrites changed entries and restores the whole cache", () => {
     const write = makeScanCacheWriter();
     const cache = cacheWith([
       ["/a.jsonl", 100, [record()]],

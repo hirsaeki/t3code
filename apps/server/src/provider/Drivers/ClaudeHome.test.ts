@@ -13,9 +13,36 @@ import {
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
+import {
+  claudeAccountConfigPath,
+  readClaudeOauthAccount,
+  readClaudeOrganizationId,
+} from "./ClaudeAccount.ts";
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude home resolution", () => {
+    it.effect("reads account identifiers from the selected config without credentials", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const directory = yield* fileSystem.makeTempDirectoryScoped();
+        const accountConfigPath = yield* claudeAccountConfigPath(directory);
+        expect(yield* readClaudeOrganizationId(accountConfigPath)).toBeUndefined();
+        yield* fileSystem.writeFileString(
+          accountConfigPath,
+          JSON.stringify({
+            oauthAccount: { organizationUuid: " org-1 ", accountUuid: "account-1" },
+          }),
+        );
+        expect(yield* readClaudeOrganizationId(accountConfigPath)).toBe("org-1");
+        expect(yield* readClaudeOauthAccount(accountConfigPath)).toEqual({
+          organizationUuid: " org-1 ",
+          accountUuid: "account-1",
+        });
+        yield* fileSystem.writeFileString(accountConfigPath, "{}");
+        expect(yield* readClaudeOrganizationId(accountConfigPath)).toBeUndefined();
+      }).pipe(Effect.scoped),
+    );
+
     it.effect("resolves configured Claude HOME and stamps continuation/cache keys with it", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

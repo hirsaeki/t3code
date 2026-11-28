@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ServerConfig from "../config.ts";
+import { makePrivateFiles } from "./privateFile.ts";
 
 const secretStoreErrorContext = {
   resource: Schema.String,
@@ -169,9 +170,10 @@ export const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const serverConfig = yield* ServerConfig.ServerConfig;
+  const { restrictPrivatePath, writePrivateFile } = yield* makePrivateFiles();
 
-  yield* fileSystem.makeDirectory(serverConfig.secretsDir, { recursive: true });
-  yield* fileSystem.chmod(serverConfig.secretsDir, 0o700).pipe(
+  yield* fileSystem.makeDirectory(serverConfig.secretsDir, { recursive: true, mode: 0o700 });
+  yield* restrictPrivatePath(serverConfig.secretsDir, "directory").pipe(
     Effect.mapError(
       (cause) =>
         new SecretStoreSecureError({
@@ -180,6 +182,16 @@ export const make = Effect.gen(function* () {
         }),
     ),
   );
+  for (const name of yield* fileSystem.readDirectory(serverConfig.secretsDir)) {
+    if (!name.endsWith(".bin") && !name.endsWith(".tmp")) continue;
+    yield* restrictPrivatePath(path.join(serverConfig.secretsDir, name), "file").pipe(
+      Effect.catch((cause) =>
+        isPlatformError(cause) && cause.reason._tag === "NotFound"
+          ? Effect.void
+          : Effect.fail(new SecretStoreSecureError({ resource: `secret ${name}`, cause })),
+      ),
+    );
+  }
 
   // Some names carry text from outside the server; one with a separator would leave the directory.
   const resolveSecretPath = (name: string): Effect.Effect<string, SecretStoreNameError> =>
@@ -193,10 +205,11 @@ export const make = Effect.gen(function* () {
   const get: ServerSecretStore["Service"]["get"] = (name) =>
     resolveSecretPath(name).pipe(
       Effect.flatMap((secretPath) =>
-        fileSystem.readFile(secretPath).pipe(
+        restrictPrivatePath(secretPath, "file").pipe(
+          Effect.andThen(fileSystem.readFile(secretPath)),
           Effect.map((bytes) => Option.some(Uint8Array.from(bytes))),
           Effect.catch((cause) =>
-            cause.reason._tag === "NotFound"
+            isPlatformError(cause) && cause.reason._tag === "NotFound"
               ? Effect.succeedNone
               : Effect.fail(
                   new SecretStoreReadError({
@@ -228,23 +241,16 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((uuid) => {
         const tempPath = `${secretPath}.${uuid}.tmp`;
         return Effect.gen(function* () {
-          yield* fileSystem.writeFile(tempPath, value);
-          yield* fileSystem.chmod(tempPath, 0o600);
+          yield* writePrivateFile(tempPath, value);
           yield* fileSystem.rename(tempPath, secretPath);
-          yield* fileSystem.chmod(secretPath, 0o600);
         }).pipe(
-          Effect.catch((cause) =>
-            fileSystem.remove(tempPath).pipe(
-              Effect.ignore,
-              Effect.flatMap(() =>
-                Effect.fail(
-                  new SecretStorePersistError({
-                    resource: `secret ${name}`,
-                    cause,
-                  }),
-                ),
-              ),
-            ),
+          Effect.ensuring(fileSystem.remove(tempPath).pipe(Effect.ignore)),
+          Effect.mapError(
+            (cause) =>
+              new SecretStorePersistError({
+                resource: `secret ${name}`,
+                cause,
+              }),
           ),
         );
       }),
@@ -267,14 +273,7 @@ export const make = Effect.gen(function* () {
       Effect.flatMap((uuid) => {
         const tempPath = `${secretPath}.${uuid}.tmp`;
         return Effect.gen(function* () {
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const file = yield* fileSystem.open(tempPath, { flag: "wx", mode: 0o600 });
-              yield* file.writeAll(value);
-              yield* file.sync;
-            }),
-          );
-          yield* fileSystem.chmod(tempPath, 0o600);
+          yield* writePrivateFile(tempPath, value);
           yield* fileSystem.link(tempPath, secretPath);
         }).pipe(
           Effect.ensuring(fileSystem.remove(tempPath).pipe(Effect.ignore)),

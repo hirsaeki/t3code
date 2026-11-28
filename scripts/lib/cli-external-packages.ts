@@ -13,7 +13,6 @@ const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "@transcribe-cpp/",
   "koffi",
   "@koromix/",
-  "@napi-rs/keyring",
   "@clerk/electron-passkeys",
   "node-gyp-build",
   "node-addon-api",

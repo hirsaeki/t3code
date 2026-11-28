@@ -90,6 +90,13 @@ credential never falls back to the reusable dev credential.
 
 ## The environment is the filesystem boundary
 
+T3-owned provider credentials use the server's restricted file store, including headless hosts:
+POSIX directories/files are owner-only and Windows ACLs are restricted to the server's OS user.
+Writes fail if these permissions cannot be verified. This is access control, not encryption or an
+OS keychain: copies in backups need the same protection. The previously evaluated keyring 1.3.0 has
+[ambiguous read/delete failures](https://github.com/Brooooooklyn/keyring-node/issues/137), so it is
+not used to persist these credentials.
+
 Projects are organizational boundaries, not filesystem sandboxes. `filesystem:read` permits reading
 any file the server's OS user can read (for example, artifacts an agent writes in a temp directory);
 relative paths and writes remain constrained by

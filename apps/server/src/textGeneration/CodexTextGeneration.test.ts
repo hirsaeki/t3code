@@ -822,9 +822,17 @@ it.effect.each(PREFLIGHT_PRIMARY_STATES)("text generation preflight: %s", (prima
         projectId,
       })
       .pipe(Effect.exit);
-    if (primaryState === "disabled, fallback disabled for project") {
+    if (
+      primaryState === "exhausted" ||
+      primaryState === "disabled, fallback disabled for project"
+    ) {
       expect(Exit.isFailure(generated)).toBe(true);
       expect(calls).toEqual([]);
+      if (primaryState === "exhausted" && Exit.isFailure(generated)) {
+        expect(Cause.squash(generated.cause)).toMatchObject({
+          detail: expect.stringContaining("usage limit"),
+        });
+      }
       return;
     }
     expect(generated).toEqual(Exit.succeed({ title: "Generated title" }));

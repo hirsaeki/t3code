@@ -1,6 +1,7 @@
 import {
   type ProviderInstanceConfig,
   ProviderInstanceId,
+  resolveProviderInstanceEnabled,
   USAGE_CONTRACT_VERSION,
   type ServerSettings as ServerSettingsValue,
   type UsageProviderKind,
@@ -25,6 +26,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
@@ -33,6 +35,7 @@ import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { BUILT_IN_USAGE_DRIVERS, type BuiltInUsageReadersEnv } from "../provider/builtInDrivers.ts";
 import type { ProviderDriver } from "@t3tools/provider-core/server/driver";
+import { clearOpenCodeUsageCache } from "@t3tools/provider-opencode/server";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import type {
   ProviderUsageInstance,
@@ -119,11 +122,19 @@ const RatesCacheFile = Schema.Struct({
 });
 const decodeRatesCache = Schema.decodeUnknownEffect(Schema.fromJsonString(RatesCacheFile));
 const encodeRatesCache = Schema.encodeEffect(Schema.fromJsonString(RatesCacheFile));
+const isUsageReadError = Schema.is(UsageReadError);
 
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
 const encodeUsageRecordKey = Schema.encodeSync(ScanCacheJson);
-const CachedSource = Schema.Struct({ dir: Schema.String, volumeId: Schema.String });
+const encodeOpenCodeSettingsKey = Schema.encodeEffect(ScanCacheJson);
+const CachedSource = Schema.Struct({
+  dir: Schema.String,
+  volumeId: Schema.String,
+  instanceIds: Schema.Array(ProviderInstanceId).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+});
 
 function isLaterRead(a: CachedFile, b: CachedFile): boolean {
   return a.mtimeMs > b.mtimeMs || (a.mtimeMs === b.mtimeMs && a.size > b.size);
@@ -350,40 +361,163 @@ export const make = Effect.gen(function* () {
     Effect.withSpan("UsageService.refreshRates"),
   );
 
-  const readSettings = settingsService.getSettings.pipe(
-    Effect.catchCause(
-      (cause) =>
-        new UsageReadError({
-          reason: "scanFailed",
-          detail: "Server settings could not be read.",
-          cause: Cause.squash(cause),
-        }),
-    ),
-  );
+  const instanceUsageKey = (instance: ProviderInstanceConfig | undefined) =>
+    instance === undefined
+      ? ""
+      : JSON.stringify([
+          instance.driver,
+          instance.enabled,
+          instance.config,
+          instance.environment,
+          instance.usageHistoryEnabled === true,
+          instance.accountUsageEnabled === true,
+        ]);
+  const consentKey = (settings: ServerSettingsValue) =>
+    JSON.stringify([
+      settings.usageHistoryRetentionDays,
+      Object.entries(settings.providerInstances).map(([id, instance]) => [
+        id,
+        instanceUsageKey(instance),
+      ]),
+    ]);
+  let previousInstances: ServerSettingsValue["providerInstances"] | undefined;
+  let previousConsentKey: string | undefined;
+  // Equal settings can follow a revocation; pending scans keep their original epoch.
+  let consentEpoch = 0;
+  interface ConsentSnapshot {
+    readonly settings: ServerSettingsValue;
+    readonly epoch: number;
+  }
+
+  const purgeOrphanFiles = () => {
+    for (const [filePath, entry] of fileCache) {
+      if (
+        [...sourceCache].some(
+          ([key, source]) =>
+            key.startsWith(`${entry.provider}\0`) && isWithinDirectory(filePath, source.dir),
+        )
+      )
+        continue;
+      fileCache.delete(filePath);
+      cacheDirty = true;
+    }
+    for (const key of coveredSince.keys()) {
+      if (
+        ![...sourceCache].some(
+          ([sourceKey, source]) => key === `${sourceKey.split("\0")[0]}\0${source.dir}`,
+        )
+      )
+        coveredSince.delete(key);
+    }
+    for (const dir of physicalSourceIds.keys()) {
+      if (![...sourceCache.values()].some((source) => source.dir === dir))
+        physicalSourceIds.delete(dir);
+    }
+  };
+
+  const reconcileConsent = (settings: ServerSettingsValue) => {
+    const key = consentKey(settings);
+    if (key !== previousConsentKey) {
+      previousConsentKey = key;
+      consentEpoch += 1;
+    }
+    for (const [key, source] of sourceCache) {
+      const instanceIds = source.instanceIds.filter((id) => {
+        const instance = settings.providerInstances[id];
+        return (
+          instance !== undefined &&
+          instance.usageHistoryEnabled === true &&
+          resolveProviderInstanceEnabled(instance) &&
+          (previousInstances === undefined ||
+            instanceUsageKey(previousInstances[id]) === instanceUsageKey(instance))
+        );
+      });
+      if (instanceIds.length === 0) {
+        sourceCache.delete(key);
+        cacheDirty = true;
+      } else if (instanceIds.length !== source.instanceIds.length) {
+        sourceCache.set(key, { ...source, instanceIds });
+        cacheDirty = true;
+      }
+    }
+    previousInstances = settings.providerInstances;
+    purgeOrphanFiles();
+  };
+
+  const readSettingsSnapshot = settingsService
+    .withSettingsSnapshot((settings) =>
+      Effect.sync(() => {
+        reconcileConsent(settings);
+        return { settings, epoch: consentEpoch } satisfies ConsentSnapshot;
+      }),
+    )
+    .pipe(
+      Effect.catchCause(
+        (cause) =>
+          new UsageReadError({
+            reason: "scanFailed",
+            detail: "Server settings could not be read.",
+            cause: Cause.squash(cause),
+          }),
+      ),
+    );
+
+  const withCurrentConsent = Effect.fn("UsageService.withCurrentConsent")(function* <A>(
+    snapshot: ConsentSnapshot,
+    use: () => A,
+  ) {
+    return yield* settingsService
+      .withSettingsSnapshot((current) => {
+        reconcileConsent(current);
+        return snapshot.epoch === consentEpoch &&
+          consentKey(snapshot.settings) === consentKey(current)
+          ? Effect.sync(use)
+          : Effect.fail(
+              new UsageReadError({
+                reason: "scanFailed",
+                detail:
+                  "Usage sources or retention changed during the scan. Refresh to use the current settings.",
+              }),
+            );
+      })
+      .pipe(
+        Effect.mapError((cause) =>
+          isUsageReadError(cause)
+            ? cause
+            : new UsageReadError({
+                reason: "scanFailed",
+                detail: "Usage source settings could not be verified.",
+                cause,
+              }),
+        ),
+      );
+  });
 
   const usageInstances = Effect.fn("UsageService.usageInstances")(function* <Config>(
     driver: ProviderDriver<Config, unknown, unknown>,
     settings: ServerSettingsValue,
+    accountWide = false,
   ) {
-    const entries: Array<
-      readonly [ProviderInstanceId, Pick<ProviderInstanceConfig, "config" | "environment">, boolean]
-    > = Object.entries(settings.providerInstances)
-      .filter(([, instance]) => instance.driver === driver.driverKind)
-      .map(([id, instance]) => [ProviderInstanceId.make(id), instance, true] as const);
-    // History in the driver's default home stays counted after every instance moves elsewhere; readers dedupe shared directories.
-    entries.push([ProviderInstanceId.make(driver.driverKind), {}, false]);
+    const entries = Object.entries(settings.providerInstances).filter(
+      ([, instance]) =>
+        instance.driver === driver.driverKind &&
+        resolveProviderInstanceEnabled(instance) &&
+        (accountWide
+          ? instance.accountUsageEnabled === true
+          : instance.usageHistoryEnabled === true),
+    );
     const decodeConfig = Schema.decodeUnknownOption(driver.configSchema);
     return yield* Effect.forEach(
       entries,
-      Effect.fnUntraced(function* ([instanceId, instance, configured]) {
+      Effect.fnUntraced(function* ([id, instance]) {
         const instanceConfig: ProviderUsageInstance<Config> = {
-          instanceId,
+          instanceId: ProviderInstanceId.make(id),
           config: Option.getOrUndefined(decodeConfig(instance.config ?? {})),
           environment: yield* mergeProviderInstanceEnvironment(
             instance.environment,
             hostEnvironment,
           ),
-          configured,
+          configured: true,
         };
         return instanceConfig;
       }),
@@ -391,20 +525,31 @@ export const make = Effect.gen(function* () {
   });
 
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* (
-    settings: ServerSettingsValue,
+    snapshot: ConsentSnapshot,
     retentionCutoffMs: number,
     awaitRefresh: boolean,
   ) {
+    const { settings } = snapshot;
     const dirs: Array<TranscriptSource> = [];
     const pending: Array<ScannedDir> = [];
     const seen = new Set<string>();
+    const selectedSources = new Set<string>();
     for (const { driver, reader } of transcriptReaders) {
       const { provider, format } = reader;
       const directories = yield* Effect.forEach(
         yield* usageInstances(driver, settings),
-        (instance) => reader.directories(instance, { awaitRefresh }),
+        (instance) =>
+          reader
+            .directories(instance, { awaitRefresh })
+            .pipe(
+              Effect.map((directories) =>
+                directories.map((directory) => ({ ...directory, instanceId: instance.instanceId })),
+              ),
+            ),
       );
-      for (const { dir: directory, fileName, refreshing } of directories.flat()) {
+      for (const { dir: directory, fileName, refreshing, instanceId } of directories.flat()) {
+        const sourceKey = provider + "\0" + directory;
+        selectedSources.add(sourceKey);
         if (refreshing) {
           const key = `${provider}\0${directory}`;
           if (seen.has(key)) continue;
@@ -412,7 +557,6 @@ export const make = Effect.gen(function* () {
           pending.push({ provider, dir: directory, volumeId: "", files: [], refreshing });
           continue;
         }
-        const sourceKey = provider + "\0" + directory;
         const previous = sourceCache.get(sourceKey);
         const dir = yield* fileSystem
           .realPath(directory)
@@ -423,19 +567,27 @@ export const make = Effect.gen(function* () {
           .some(
             ([filePath, entry]) =>
               entry.provider === provider &&
-              entry.mtimeMs >= retentionCutoffMs &&
-              (entry.records.length + entry.tailRecords.length > 0 ||
-                entry.malformedRecords.length > 0) &&
+              (entry.records.some((record) => record.timestampMs >= retentionCutoffMs) ||
+                entry.tailRecords.some((record) => record.timestampMs >= retentionCutoffMs) ||
+                entry.malformedRecords.some((timestamp) => timestamp >= retentionCutoffMs)) &&
               isWithinDirectory(filePath, dir),
           );
         const volumeId =
           previous?.dir === dir && (hasRetainedHistory || !currentVolumeId)
             ? previous.volumeId || currentVolumeId
             : currentVolumeId;
-        if (previous?.dir !== dir || previous.volumeId !== volumeId) {
-          sourceCache.set(sourceKey, { dir, volumeId });
-          cacheDirty = true;
-        }
+        yield* withCurrentConsent(snapshot, () => {
+          const current = sourceCache.get(sourceKey);
+          const instanceIds = [...new Set([...(current?.instanceIds ?? []), instanceId])];
+          if (
+            current?.dir !== dir ||
+            current.volumeId !== volumeId ||
+            instanceIds.length !== current.instanceIds.length
+          ) {
+            sourceCache.set(sourceKey, { dir, volumeId, instanceIds });
+            cacheDirty = true;
+          }
+        });
         const key = `${provider}\0${dir}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -450,12 +602,23 @@ export const make = Effect.gen(function* () {
         });
       }
     }
+    yield* withCurrentConsent(snapshot, () => {
+      for (const key of sourceCache.keys()) {
+        if (!selectedSources.has(key)) {
+          sourceCache.delete(key);
+          cacheDirty = true;
+        }
+      }
+      purgeOrphanFiles();
+    });
     return { dirs, pending };
   });
 
   // Share first loads so concurrent readers cannot scan against a still-empty cache.
   const ensureScanCacheLoaded = yield* Effect.cached(
     Effect.gen(function* () {
+      // Rewrite once even when decoding fails, so invalid and superseded caches are cleared.
+      cacheDirty = true;
       const readDocument = (filePath: string) =>
         fileSystem.readFileString(filePath).pipe(
           Effect.flatMap((raw) => decodeScanCacheFile(raw)),
@@ -466,7 +629,6 @@ export const make = Effect.gen(function* () {
       for (const fileName of LEGACY_SCAN_CACHE_FILE_NAMES) {
         if (document !== null) break;
         document = yield* readDocument(path.join(config.stateDir, fileName));
-        cacheDirty = document !== null;
       }
       if (document === null) return;
       const decoded = decodeScanCache(document, transcriptFormats);
@@ -493,7 +655,6 @@ export const make = Effect.gen(function* () {
 
   // The saved cache supersedes older versions. Temp folders an aborted write left behind are
   // removed once idle for an hour, so a write in progress from another server survives.
-  let supersededFilesRemoved = false;
   const removeSupersededCacheFiles = Effect.gen(function* () {
     for (const fileName of LEGACY_SCAN_CACHE_FILE_NAMES) {
       yield* fileSystem.remove(path.join(config.stateDir, fileName)).pipe(Effect.ignore);
@@ -517,32 +678,75 @@ export const make = Effect.gen(function* () {
     }
   }).pipe(Effect.ignore);
 
+  let openCodeSettingsKey: string | undefined;
+  const clearChangedOpenCodeCache = Effect.fn("UsageService.clearChangedOpenCodeCache")(function* (
+    settings: ServerSettingsValue,
+  ) {
+    const key = yield* encodeOpenCodeSettingsKey([
+      Object.entries(settings.providerInstances).filter(
+        ([, instance]) => instance.driver === "opencode",
+      ),
+      settings.usageHistoryRetentionDays,
+    ]);
+    if (key === openCodeSettingsKey) return;
+    yield* clearOpenCodeUsageCache;
+    openCodeSettingsKey = key;
+  });
+
+  const reconcileCaches = Effect.fn("UsageService.reconcileCaches")(function* (
+    settings: ServerSettingsValue,
+  ) {
+    reconcileConsent(settings);
+    yield* clearChangedOpenCodeCache(settings);
+    const nowMs = yield* Clock.currentTimeMillis;
+    const cutoffMs =
+      settings.usageHistoryRetentionDays === "unlimited"
+        ? 0
+        : Math.max(0, nowMs - settings.usageHistoryRetentionDays * 24 * 60 * 60 * 1000);
+    if (pruneScanCache(fileCache, cutoffMs) > 0) cacheDirty = true;
+  });
+
   // Clear dirty before encoding to retain concurrent changes; restore it on failure for retry.
-  const persistCaches = Effect.gen(function* () {
-    if (cacheDirty) {
-      cacheDirty = false;
-      yield* Effect.sync(() =>
-        writeScanCache(fileCache, {
-          sources: Object.fromEntries(sourceCache),
-          coveredSince: Object.fromEntries(coveredSince),
+  const persistCaches = settingsService
+    .withSettingsSnapshot((current) =>
+      Effect.gen(function* () {
+        yield* reconcileCaches(current);
+        if (!cacheDirty) return;
+        cacheDirty = false;
+        yield* (
+          fileCache.size === 0 && sourceCache.size === 0
+            ? fileSystem.remove(scanCachePath).pipe(
+                Effect.catchIf(
+                  (error) => error.reason._tag === "NotFound",
+                  () => Effect.void,
+                ),
+              )
+            : writeCacheFile(
+                scanCachePath,
+                writeScanCache(fileCache, {
+                  sources: Object.fromEntries(sourceCache),
+                  coveredSince: Object.fromEntries(coveredSince),
+                }),
+              )
+        ).pipe(
+          Effect.andThen(removeSupersededCacheFiles),
+          Effect.catchCause(() =>
+            Effect.sync(() => {
+              cacheDirty = true;
+            }),
+          ),
+        );
+      }),
+    )
+    .pipe(
+      persistLock.withPermit,
+      Effect.catchCause(() =>
+        Effect.sync(() => {
+          cacheDirty = true;
         }),
-      ).pipe(
-        Effect.flatMap((contents) => writeCacheFile(scanCachePath, contents)),
-        Effect.andThen(
-          Effect.suspend(() => {
-            if (supersededFilesRemoved) return Effect.void;
-            supersededFilesRemoved = true;
-            return removeSupersededCacheFiles;
-          }),
-        ),
-        Effect.catchCause(() =>
-          Effect.sync(() => {
-            cacheDirty = true;
-          }),
-        ),
-      );
-    }
-  }).pipe(persistLock.withPermit, Effect.withSpan("UsageService.persistCaches"));
+      ),
+      Effect.withSpan("UsageService.persistCaches"),
+    );
 
   const pendingPersists = new Set<Fiber.Fiber<void>>();
   const schedulePersist = Effect.forkDetach(persistCaches).pipe(
@@ -551,14 +755,15 @@ export const make = Effect.gen(function* () {
       fiber.addObserver(() => pendingPersists.delete(fiber));
     }),
   );
-  const awaitPersisted = Effect.suspend(() => Fiber.awaitAll([...pendingPersists])).pipe(
-    Effect.asVoid,
-  );
+  const awaitPersisted = Effect.andThen(
+    persistCaches,
+    Effect.suspend(() => Fiber.awaitAll([...pendingPersists])),
+  ).pipe(Effect.asVoid);
   yield* Effect.addFinalizer(() => awaitPersisted);
 
   /**
    * Reads run concurrently, and the caller stores updates in walk order rather
-   * than completion order: saved records of deleted transcripts aggregate in
+   * than completion order: cached records aggregate in
    * cache order, where the first copy of a duplicate decides its bucket. Untraced: a scan
    * reads thousands of files, so scanTranscriptDir records the counts instead.
    */
@@ -705,6 +910,7 @@ export const make = Effect.gen(function* () {
     source: TranscriptSource,
     windowStartMs: number,
     fromMemory: boolean,
+    snapshot: ConsentSnapshot,
   ) {
     const { provider, format, dir, volumeId, physicalSourceId, fileName } = source;
     const identity = {
@@ -717,10 +923,16 @@ export const make = Effect.gen(function* () {
       .exists(dir)
       .pipe(Effect.catchCause(() => Effect.succeed(false)));
     if (!exists) {
-      cover(source, windowStartMs);
+      yield* withCurrentConsent(snapshot, () => {
+        for (const [key, cached] of sourceCache) {
+          if (key.startsWith(`${provider}\0`) && cached.dir === dir) sourceCache.delete(key);
+        }
+        purgeOrphanFiles();
+        cacheDirty = true;
+      });
       return { ...identity, files: null } satisfies ScannedDir;
     }
-    // scanSummary aggregates the saved files, as it does for a deleted directory.
+    // scanSummary can use saved files when the current walk is incomplete.
     if (fromMemory) return { ...identity, files: [] } satisfies ScannedDir;
     const { files, walked, failedPaths } = yield* Effect.promise(() =>
       listTranscriptFiles(dir, windowStartMs, fileName === undefined ? undefined : { fileName }),
@@ -733,26 +945,43 @@ export const make = Effect.gen(function* () {
         ),
       { concurrency: TRANSCRIPT_READ_CONCURRENCY },
     );
-    const parsedFiles = read.map(({ path, records, malformedRecords, update }) => {
-      if (update === undefined) return { path, records, malformedRecords };
-      // A scan of another window may have cached its own read of this file
-      // meanwhile. Then keep whichever read saw the later file, so a slower
-      // scan never replaces newer usage with older.
-      const current = fileCache.get(path);
-      if (
-        current === update.replaces ||
-        current === undefined ||
-        isLaterRead(update.entry, current)
-      ) {
-        fileCache.set(path, {
-          ...update.entry,
-          records: correctedBatch(update.entry.records),
-          tailRecords: correctedBatch(update.entry.tailRecords),
-        });
-        cacheDirty = true;
-      }
-      return { path, records, malformedRecords };
-    });
+    const parsedFiles = yield* withCurrentConsent(snapshot, () =>
+      read.map(({ path, records, malformedRecords, update }) => {
+        if (update === undefined) return { path, records, malformedRecords };
+        // A scan of another window may have cached its own read of this file
+        // meanwhile. Then keep whichever read saw the later file, so a slower
+        // scan never replaces newer usage with older.
+        const current = fileCache.get(path);
+        if (
+          current === update.replaces ||
+          current === undefined ||
+          isLaterRead(update.entry, current)
+        ) {
+          fileCache.set(path, {
+            ...update.entry,
+            records: correctedBatch(update.entry.records),
+            tailRecords: correctedBatch(update.entry.tailRecords),
+          });
+          cacheDirty = true;
+        }
+        return { path, records, malformedRecords };
+      }),
+    );
+    if (failedPaths === 0) {
+      const present = new Set(walked);
+      yield* withCurrentConsent(snapshot, () => {
+        for (const [filePath, entry] of fileCache) {
+          if (
+            entry.provider === provider &&
+            isWithinDirectory(filePath, dir) &&
+            !present.has(filePath)
+          ) {
+            fileCache.delete(filePath);
+            cacheDirty = true;
+          }
+        }
+      });
+    }
     const livePaths = new Set(files.map((file) => file.path));
     for (const file of read) {
       if (file.failed || !file.path.endsWith(".jsonl.zst")) continue;
@@ -782,17 +1011,26 @@ export const make = Effect.gen(function* () {
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
     { dirs, pending }: Effect.Success<ReturnType<typeof resolveTranscriptDirs>>,
     windowStartMs: number,
-    settings: ServerSettingsValue,
+    snapshot: ConsentSnapshot,
     retentionCutoffMs: number,
     awaitRefresh: boolean,
     fromMemory: boolean,
   ) {
+    const { settings } = snapshot;
     const scans = Effect.forEach(
       scanReaders,
       ({ driver, reader }) =>
-        usageInstances(driver, settings).pipe(
+        usageInstances(driver, settings, reader.accountWide === true).pipe(
           Effect.flatMap((instances) =>
-            reader.scan({ instances, settings, windowStartMs, retentionCutoffMs, awaitRefresh }),
+            instances.length === 0
+              ? Effect.succeed([])
+              : reader.scan({
+                  instances,
+                  settings,
+                  windowStartMs,
+                  retentionCutoffMs,
+                  awaitRefresh,
+                }),
           ),
           Effect.flatMap((sources) =>
             Effect.forEach(sources, ({ volumeId, ...source }) =>
@@ -821,7 +1059,10 @@ export const make = Effect.gen(function* () {
 
     // Scan independent sources together, directories sequentially to bound open files; keep order, since the first copy decides a duplicate's bucket.
     const [transcripts, scanDirs] = yield* Effect.all(
-      [Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory)), scans],
+      [
+        Effect.forEach(dirs, (dir) => scanTranscriptDir(dir, windowStartMs, fromMemory, snapshot)),
+        scans,
+      ],
       { concurrency: "unbounded" },
     );
     const scanned: readonly ScannedDir[] = [...transcripts, ...pending, ...scanDirs.flat()];
@@ -830,9 +1071,10 @@ export const make = Effect.gen(function* () {
 
   const scanSummary = Effect.fn("UsageService.scanSummary")(function* (
     input: UsageSummaryInput,
-    settings: ServerSettingsValue,
+    snapshot: ConsentSnapshot,
     provisional: boolean,
   ) {
+    const { settings } = snapshot;
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
         reason: "invalidWindow",
@@ -866,6 +1108,7 @@ export const make = Effect.gen(function* () {
 
     const startedAtMs = yield* Clock.currentTimeMillis;
     yield* ensureScanCacheLoaded;
+    yield* withCurrentConsent(snapshot, () => undefined);
 
     const windowStart = DateTime.make(`${input.sinceDay}T00:00:00Z`);
     if (Option.isNone(windowStart)) {
@@ -889,7 +1132,7 @@ export const make = Effect.gen(function* () {
 
     const awaitRefresh = input.awaitRefresh === true;
     const collect = Effect.gen(function* () {
-      const resolved = yield* resolveTranscriptDirs(settings, retentionCutoffMs, awaitRefresh).pipe(
+      const resolved = yield* resolveTranscriptDirs(snapshot, retentionCutoffMs, awaitRefresh).pipe(
         Effect.provideContext(readerContext),
       );
       // A window no complete scan has read would show partial totals, so every directory must cover it.
@@ -907,7 +1150,7 @@ export const make = Effect.gen(function* () {
           collectDirs(
             resolved,
             windowStartMs,
-            settings,
+            snapshot,
             retentionCutoffMs,
             awaitRefresh,
             fromMemory,
@@ -926,8 +1169,7 @@ export const make = Effect.gen(function* () {
     const modelAliases = resolveModelAliases(settings.usageModelAliases);
     const sources: UsageSource[] = [];
 
-    // Deleted transcripts' saved usage still aggregates and deduplicates normally.
-    const retainedSinceMs = Math.max(windowStartMs, retentionCutoffMs);
+    // Saved usage supports provisional and incomplete scans.
     // Saved paths are files below a scanned root, so their folder decides; folders repeat thousands of times.
     const withinDir = (dir: string) => {
       const foldersWithin = new Map<string, boolean>();
@@ -946,12 +1188,7 @@ export const make = Effect.gen(function* () {
       const livePaths = new Set(retainedFiles.map((file) => file.path));
       const isRetained = withinDir(dir);
       for (const [filePath, entry] of fileCache) {
-        if (
-          entry.provider !== provider ||
-          entry.mtimeMs < retainedSinceMs ||
-          livePaths.has(filePath) ||
-          !isRetained(filePath)
-        )
+        if (entry.provider !== provider || livePaths.has(filePath) || !isRetained(filePath))
           continue;
         retainedFiles.push({
           path: filePath,
@@ -965,7 +1202,9 @@ export const make = Effect.gen(function* () {
       return retainedFiles.flatMap((file) => {
         // A keyed copy outside the window still claims its key, so a later copy is not counted.
         const records = file.records.filter(
-          (record) => record.dedupeKey !== null || inWindow(record.timestampMs),
+          (record) =>
+            record.timestampMs >= retentionCutoffMs &&
+            (record.dedupeKey !== null || inWindow(record.timestampMs)),
         );
         const malformedRecords = file.malformedRecords.filter(inWindow);
         return records.length === 0 && malformedRecords.length === 0
@@ -974,7 +1213,7 @@ export const make = Effect.gen(function* () {
       });
     });
     // Usage two transcripts share counts in the first one, so saved files take the order an exact
-    // scan reads them in: walked files in walk order, then the directory's deleted files.
+    // scan reads them in: walked files in walk order, then any unread cached files.
     for (const { provider, dir, walked } of fromMemory ? [] : scannedDirs) {
       if (walked === undefined) continue;
       const within = withinDir(dir);
@@ -1200,18 +1439,18 @@ export const make = Effect.gen(function* () {
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
     } satisfies UsageSummary;
-    return { summary, fromMemory };
+    return yield* withCurrentConsent(snapshot, () => ({ summary, fromMemory }));
   });
 
   const readWindow = Effect.fn("UsageService.readWindow")(function* (
     input: UsageSummaryInput,
-    settings: ServerSettingsValue,
+    snapshot: ConsentSnapshot,
     provisional: boolean,
   ) {
-    const { summary, fromMemory } = yield* scanSummary(input, settings, provisional);
+    const { summary, fromMemory } = yield* scanSummary(input, snapshot, provisional);
     // With nothing marked refreshing the client would keep a saved answer as final.
     return fromMemory && !summary.sources.some((source) => source.refreshing === true)
-      ? (yield* scanSummary(input, settings, false)).summary
+      ? (yield* scanSummary(input, snapshot, false)).summary
       : summary;
   });
 
@@ -1219,7 +1458,7 @@ export const make = Effect.gen(function* () {
 
   const scanKey = (
     input: UsageSummaryInput,
-    settings: ServerSettingsValue,
+    snapshot: ConsentSnapshot,
     provisional: boolean,
   ): string =>
     JSON.stringify([
@@ -1229,7 +1468,7 @@ export const make = Effect.gen(function* () {
       input.resolution ?? "day",
       input.sinceTime ?? null,
       input.untilTime ?? null,
-      settings,
+      snapshot,
       input.awaitRefresh === true,
       provisional,
       input.modelFilter ?? null,
@@ -1241,9 +1480,9 @@ export const make = Effect.gen(function* () {
     const { modelFilter: requestedFilter, ...unfiltered } = requested;
     const modelFilter = canonicalModelFilter(requestedFilter);
     const input = modelFilter === undefined ? unfiltered : { ...unfiltered, modelFilter };
-    const settings = yield* readSettings;
+    const snapshot = yield* readSettingsSnapshot;
     const provisional = input.provisional === true && input.awaitRefresh !== true;
-    const key = scanKey(input, settings, provisional);
+    const key = scanKey(input, snapshot, provisional);
     const deferred = yield* Effect.uninterruptible(
       Effect.gen(function* () {
         const existing = inflightScans.get(key);
@@ -1254,7 +1493,7 @@ export const make = Effect.gen(function* () {
         inflightScans.set(key, created);
         // Detach so caller departure cannot cancel shared scans; finished scans warm the cache.
         // Register writes before releasing waiters, but start writing after delivering their summary.
-        yield* readWindow(input, settings, provisional).pipe(
+        yield* readWindow(input, snapshot, provisional).pipe(
           Effect.onExit((exit) =>
             Effect.sync(() => inflightScans.delete(key)).pipe(
               Effect.andThen(Exit.isSuccess(exit) ? schedulePersist : Effect.void),
@@ -1268,6 +1507,19 @@ export const make = Effect.gen(function* () {
     );
     return yield* Deferred.await(deferred);
   });
+
+  const settingsChanges = yield* settingsService.subscribeChanges;
+  yield* ensureScanCacheLoaded;
+  yield* persistCaches;
+  yield* settingsChanges.pipe(
+    Stream.changesWith((previous, next) => consentKey(previous) === consentKey(next)),
+    Stream.runForEach((settings) =>
+      // Apply every delivered selection before rereading current settings: a quick revoke and
+      // reselect must retire the old cache even when the latest snapshot is selected again.
+      reconcileCaches(settings).pipe(Effect.andThen(persistCaches)),
+    ),
+    Effect.forkScoped,
+  );
 
   return { readSummary, refreshRates, awaitPersisted } as const;
 });

@@ -1,4 +1,5 @@
 import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 const argv = process.argv.slice(2);
 const args = argv.join(" ");
@@ -37,15 +38,30 @@ if (process.env.T3_FAKE_CLAUDE_REJECTS_NO_SESSION_PERSISTENCE === "1") {
 }
 const settingsIndex = argv.indexOf("--settings");
 const settingsValue = settingsIndex === -1 ? "{}" : argv[settingsIndex + 1];
-// Like the CLI: a value starting with a brace is inline JSON, anything else a file path.
-const settingsText = settingsValue.startsWith("{")
-  ? settingsValue
-  : NodeFS.readFileSync(settingsValue, "utf8");
+if (settingsValue.startsWith("{")) {
+  fail("text generation must keep settings out of process arguments", 17);
+}
+if (
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone CLI fixture has no Effect runtime.
+  process.platform !== "win32" &&
+  ((NodeFS.statSync(settingsValue).mode & 0o777) !== 0o600 ||
+    (NodeFS.statSync(NodePath.dirname(settingsValue)).mode & 0o777) !== 0o700)
+) {
+  fail("text generation settings must be private", 18);
+}
+const settingsText = NodeFS.readFileSync(settingsValue, "utf8");
+const settingsMustContain = process.env.T3_FAKE_CLAUDE_SETTINGS_MUST_CONTAIN;
+if (settingsMustContain && !settingsText.includes(settingsMustContain)) {
+  fail("settings missing expected content", 19);
+}
 if (JSON.parse(settingsText).disableAllHooks !== true) {
   fail("text generation must disable hooks", 10);
 }
 if (process.env.T3_FAKE_CLAUDE_SETTINGS_LOG) {
   NodeFS.writeFileSync(process.env.T3_FAKE_CLAUDE_SETTINGS_LOG, settingsText);
+}
+if (process.env.T3_FAKE_CLAUDE_SETTINGS_PATH_LOG) {
+  NodeFS.writeFileSync(process.env.T3_FAKE_CLAUDE_SETTINGS_PATH_LOG, settingsValue);
 }
 const cwdMustNotBe = process.env.T3_FAKE_CLAUDE_CWD_MUST_NOT_BE;
 if (cwdMustNotBe && NodeFS.realpathSync(process.cwd()) === NodeFS.realpathSync(cwdMustNotBe)) {

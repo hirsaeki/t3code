@@ -32,6 +32,11 @@ as `op://vault/item/field`. Copy the reference from 1Password with **Copy Secret
 Select the check button next to a reference to read it now. If it reads, providers that use it
 start using the new value.
 
+Values saved directly are stored in files restricted to the operating-system account running the
+server. T3 Code verifies access permissions on macOS, Linux, and Windows. These files are not
+encrypted by T3 Code or stored in the operating system's credential vault. Keep backups of the
+server's data directory private, or choose a secret provider so T3 Code saves only a reference.
+
 T3 Code reads the secret when it needs it, for example when a provider starts. Change the
 credential in 1Password and refresh to use the new value.
 

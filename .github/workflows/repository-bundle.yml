@@ -18,7 +18,7 @@ jobs:
         startsWith(github.event.issue.title, '[repository-bundle]')
       )
     name: create repository bundle
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Select branch
@@ -38,12 +38,25 @@ jobs:
           fi
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ steps.select.outputs.ref }}
-          fetch-depth: 0
-          sparse-checkout: .github
-          persist-credentials: false
+      - name: Fetch complete branch history without a worktree
+        shell: bash
+        env:
+          REF: ${{ steps.select.outputs.ref }}
+          REPOSITORY: ${{ github.repository }}
+          BUNDLE_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git check-ref-format "refs/heads/$REF"
+          git init --bare "$RUNNER_TEMP/repository.git"
+          auth="$(printf 'x-access-token:%s' "$BUNDLE_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+            git --git-dir="$RUNNER_TEMP/repository.git" fetch \
+              --no-tags --no-recurse-submodules \
+              "https://github.com/$REPOSITORY.git" \
+              "+refs/heads/$REF:refs/heads/$REF"
 
       - name: Create git bundle
         id: bundle
@@ -51,12 +64,12 @@ jobs:
         env:
           REF: ${{ steps.select.outputs.ref }}
         run: |
-          commit="$(git rev-parse HEAD)"
-          git bundle create "$RUNNER_TEMP/repo.bundle" "refs/heads/$REF"
+          commit="$(git --git-dir="$RUNNER_TEMP/repository.git" rev-parse "refs/heads/$REF")"
+          git --git-dir="$RUNNER_TEMP/repository.git" bundle create "$RUNNER_TEMP/repo.bundle" "refs/heads/$REF"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Verify git bundle
-        run: git bundle verify "$RUNNER_TEMP/repo.bundle"
+        run: git --git-dir="$RUNNER_TEMP/repository.git" bundle verify "$RUNNER_TEMP/repo.bundle"
 
       - name: Split git bundle
         shell: bash

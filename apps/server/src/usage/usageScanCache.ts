@@ -10,16 +10,17 @@ import { CLAUDE_SYNTHETIC_MODEL } from "../provider/Drivers/claudeUsage.ts";
 import { mergeUsageCopies } from "./usageAggregation.ts";
 import { GUARD_LENGTH, type TranscriptParsePosition } from "./usageTranscriptReader.ts";
 
-const USAGE_SCAN_CACHE_VERSION = 17 as const;
+const USAGE_SCAN_CACHE_VERSION = 18 as const;
 const SPEED_COMPATIBLE_SINCE_VERSION = 4;
 
 /**
  * An older server sharing that directory cannot read a newer cache and would
- * replace it, dropping saved usage for deleted transcripts. Separate files keep
+ * replace it with an incompatible encoding. Separate files keep
  * the newer one; older files are removed once it is saved.
  */
-export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v17.json";
+export const SCAN_CACHE_FILE_NAME = "usage-scan-cache-v18.json";
 export const LEGACY_SCAN_CACHE_FILE_NAMES = [
+  "usage-scan-cache-v17.json",
   "usage-scan-cache-v16.json",
   "usage-scan-cache-v15.json",
   "usage-scan-cache-v14.json",
@@ -146,13 +147,13 @@ function serializeFile(entry: CachedFile, tables: InternTables): SerializedFile 
   };
 }
 
-/** Yields the document in pieces so large caches never become one string; growing intern tables preserve indexes, retaining unused strings until restart. */
+/** Each snapshot interns only live records, so purged identifiers leave the saved cache. */
 export function makeScanCacheWriter(): (
   cache: ScanCache,
   extra: Readonly<Record<string, unknown>>,
 ) => Iterable<string> {
-  const tables = makeInternTables();
   function* encode(entries: readonly (readonly [string, CachedFile])[], extra: object) {
+    const tables = makeInternTables();
     yield '{"files":{';
     for (const [index, [path, entry]] of entries.entries()) {
       yield `${index === 0 ? "" : ","}${JSON.stringify(path)}:${JSON.stringify(serializeFile(entry, tables))}`;
@@ -244,7 +245,7 @@ export function decodeScanCache(
         return null;
       }
 
-      // Unchanged and deleted transcripts may only exist in the cache, so the
+      // Unchanged transcripts may only be read from the cache, so the
       // parser cannot remove their previously saved local placeholders.
       if (provider === "claude" && model === CLAUDE_SYNTHETIC_MODEL) continue;
 
@@ -320,7 +321,7 @@ export function decodeScanCache(
     ) {
       continue;
     }
-    // Keep history for deleted rollouts, but re-parse incompatible reducer state.
+    // Reuse compatible records until discovery and re-parse incompatible reducer state.
     // v13 adds Claude 1-hour cache writes; v14 uses Codex request ledgers.
     // v15 repairs skipped Codex requests whose counters rewound; clean v14 entries stay served.
     // v17 keys Grok turns by time, restoring turns previously dropped as repeats.
@@ -379,14 +380,35 @@ function makeStateValidators(
 }
 
 export function pruneScanCache(cache: ScanCache, retentionCutoffMs: number): number {
-  let removed = 0;
+  let changed = 0;
   for (const [path, entry] of cache) {
-    if (entry.mtimeMs < retentionCutoffMs) {
+    const records = entry.records.filter((record) => record.timestampMs >= retentionCutoffMs);
+    const tailRecords = entry.tailRecords.filter(
+      (record) => record.timestampMs >= retentionCutoffMs,
+    );
+    const malformedRecords = entry.malformedRecords.filter(
+      (timestamp) => timestamp >= retentionCutoffMs,
+    );
+    if (records.length + tailRecords.length + malformedRecords.length === 0) {
       cache.delete(path);
-      removed += 1;
+      changed += 1;
+    } else if (
+      records.length !== entry.records.length ||
+      tailRecords.length !== entry.tailRecords.length ||
+      malformedRecords.length !== entry.malformedRecords.length
+    ) {
+      cache.set(path, {
+        ...entry,
+        size: -1,
+        records,
+        tailRecords,
+        malformedRecords,
+        position: { resumeOffset: 0, guardLength: 0, guardHash: 0, state: null },
+      });
+      changed += 1;
     }
   }
-  return removed;
+  return changed;
 }
 
 /** Pass only newline-terminated records: an unterminated tail can still change, so the aggregator merges it per scan. */

@@ -1,6 +1,7 @@
 import { resolveProviderProbeTimeoutMs } from "@t3tools/provider-core/server/snapshotProbe";
 import {
   ProviderDriverKind,
+  isProviderAccountUsageEnabled,
   settingsSecretLiteral,
   type ServerProviderModel,
 } from "@t3tools/contracts";
@@ -490,30 +491,46 @@ export const OpenCodeDriver: ProviderDriver<
       ),
     );
 
-    const legacyUsageLimits = readOpenCodeGoUsageLimits({
-      enabled: effectiveConfig.enabled,
-      serverUrl: effectiveConfig.serverUrl,
-      environment: processEnv,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, pathService),
-      Effect.provideService(HttpClient.HttpClient, httpClient),
-      Effect.provideService(Digest.Digest, digest),
+    const accountUsageEnabled = host.settings.get.pipe(
+      Effect.map((settings) => isProviderAccountUsageEnabled(settings, instanceId)),
+      Effect.orElseSucceed(() => false),
+    );
+    const legacyUsageLimits = accountUsageEnabled.pipe(
+      Effect.flatMap((allowed) =>
+        !allowed
+          ? Effect.undefined
+          : readOpenCodeGoUsageLimits({
+              enabled: effectiveConfig.enabled,
+              serverUrl: effectiveConfig.serverUrl,
+              environment: processEnv,
+            }).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, pathService),
+              Effect.provideService(HttpClient.HttpClient, httpClient),
+              Effect.provideService(Digest.Digest, digest),
+            ),
+      ),
     );
     let unsupportedUsageVersion: string | undefined;
     const checkUsageLimits = Effect.gen(function* () {
-      if (!effectiveConfig.enabled) return yield* legacyUsageLimits;
+      if (!effectiveConfig.enabled || !(yield* accountUsageEnabled)) return undefined;
       const runtime = yield* runtimeProbe.get;
       if (runtime.generation === "v1" || runtime.version === unsupportedUsageVersion)
         return yield* legacyUsageLimits;
       const limits = yield* openCode2Server.withConnection((connection) =>
-        connection.usageLimits(host.paths.cwd),
+        accountUsageEnabled.pipe(
+          Effect.flatMap((allowed) =>
+            allowed ? connection.usageLimits(host.paths.cwd) : Effect.undefined,
+          ),
+        ),
       );
       if (limits === undefined) unsupportedUsageVersion = runtime.version;
       if (limits !== undefined && limits.unavailable?.reason !== "unsupported") return limits;
       // Without a Console workspace the server reports nothing, but a local Go key still has usage.
       const legacy = yield* legacyUsageLimits;
-      return limits !== undefined && legacy.unavailable?.reason === "unsupported" ? limits : legacy;
+      return limits !== undefined && legacy?.unavailable?.reason === "unsupported"
+        ? limits
+        : legacy;
     }).pipe(
       Effect.timeout("10 seconds"),
       Effect.catch(() =>

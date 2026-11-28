@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -69,12 +70,14 @@ it.effect("keeps malformed source URLs encodable for config subscribers", () =>
             url: "localhost:8317",
             managementKey: "",
             enabled: true,
+            accountUsageEnabled: true,
           },
           [UsageLimitSourceId.make("opaque-hub")]: {
             kind: "cliproxy",
             url: "file:///tmp/hub",
             managementKey: "",
             enabled: true,
+            accountUsageEnabled: true,
           },
           [UsageLimitSourceId.make("named-hub")]: {
             kind: "cliproxy",
@@ -82,18 +85,21 @@ it.effect("keeps malformed source URLs encodable for config subscribers", () =>
             label: "Named hub",
             managementKey: "",
             enabled: true,
+            accountUsageEnabled: true,
           },
           [UsageLimitSourceId.make("valid-hub")]: {
             kind: "cliproxy",
             url: "https://hub.test:8317/team-a/management.html",
             managementKey: "",
             enabled: true,
+            accountUsageEnabled: true,
           },
           [UsageLimitSourceId.make(" ")]: {
             kind: "cliproxy",
             url: "localhost:8317",
             managementKey: "",
             enabled: true,
+            accountUsageEnabled: true,
           },
         },
       }),
@@ -173,6 +179,7 @@ it.effect("publishes validated HTTP quotas as display-only accounts", () => {
             url: "https://quota.test/v1",
             managementKey: "test-token",
             enabled: true,
+            accountUsageEnabled: true,
           },
         },
       }),
@@ -215,12 +222,14 @@ it.effect("reads a management key from its secret provider", () => {
             url: "https://resolved.test",
             managementKey: keySource("cliproxy#key"),
             enabled: true,
+            accountUsageEnabled: true,
           },
           [UsageLimitSourceId.make("unresolved-hub")]: {
             kind: "cliproxy",
             url: "https://unresolved.test",
             managementKey: keySource("missing#key"),
             enabled: true,
+            accountUsageEnabled: true,
           },
         },
       }),
@@ -251,37 +260,20 @@ it.effect("reads a management key from its secret provider", () => {
   );
 });
 
-it.effect("keeps an account's last good reading when the hub's next read of it is refused", () => {
-  let refused = true;
-  let workspace = "account-a";
-  let listsIdentity = true;
-  const readAccount = Effect.gen(function* () {
-    const sources = yield* UsageLimitSources.make;
-    return Effect.gen(function* () {
-      yield* sources.refresh;
-      const [source] = yield* sources.current;
-      return source?.accounts[0]?.usageLimits;
-    });
-  });
+it.effect("keeps hub quota unavailable without making upstream account requests", () => {
+  const paths: string[] = [];
   return Effect.gen(function* () {
-    const read = yield* readAccount;
-    // Nothing to keep yet: the account stays listed as unreadable.
-    expect(yield* read).toMatchObject({ windows: [], unavailable: { reason: "probeFailed" } });
-    refused = false;
-    const good = yield* read;
-    expect(good?.windows.map((window) => window.usedPercent)).toEqual([78]);
-    expect(good?.unavailable).toBeUndefined();
-    refused = true;
-    expect(yield* read).toEqual(good);
-    // The same auth file now holds another login, whose reading is unknown.
-    workspace = "account-b";
-    expect(yield* read).toMatchObject({ windows: [], unavailable: { reason: "probeFailed" } });
-    // A file that lists no login cannot show whether the next one is the same.
-    listsIdentity = false;
-    refused = false;
-    yield* read;
-    refused = true;
-    expect(yield* read).toMatchObject({ windows: [], unavailable: { reason: "probeFailed" } });
+    const sources = yield* UsageLimitSources.make;
+    yield* sources.refresh;
+    const [source] = yield* sources.current;
+    expect(source?.accounts[0]?.usageLimits).toMatchObject({
+      windows: [],
+      unavailable: { reason: "unsupported" },
+    });
+    expect(paths.length).toBeGreaterThan(0);
+    expect(
+      paths.every((path) => path.endsWith("/auth-files") || path.endsWith("/auth-files/models")),
+    ).toBe(true);
   }).pipe(
     Effect.provide([
       ServerSettings.layerTest({
@@ -291,6 +283,7 @@ it.effect("keeps an account's last good reading when the hub's next read of it i
             url: "http://hub.test:8317",
             managementKey: "management-secret",
             enabled: true,
+            accountUsageEnabled: true,
           },
         },
       }),
@@ -306,42 +299,23 @@ it.effect("keeps an account's last good reading when the hub's next read of it i
         HttpClient.HttpClient,
         HttpClient.make((request) =>
           Effect.sync(() => {
-            if (new URL(request.url).pathname.endsWith("/auth-files")) {
-              return HttpClientResponse.fromWeb(
-                request,
-                Response.json({
-                  files: [
-                    {
-                      id: "first.json",
-                      auth_index: "a",
-                      provider: "codex",
-                      ...(listsIdentity
-                        ? {
-                            email: "first@example.com",
-                            id_token: { chatgpt_account_id: workspace },
-                          }
-                        : {}),
-                    },
-                  ],
-                }),
-              );
-            }
-            const usage = {
-              plan_type: "pro",
-              rate_limit: {
-                secondary_window: {
-                  used_percent: 78,
-                  reset_at: 4070908800,
-                  limit_window_seconds: 604800,
-                },
-              },
-            };
+            const path = new URL(request.url).pathname;
+            paths.push(path);
             return HttpClientResponse.fromWeb(
               request,
               Response.json(
-                refused
-                  ? { status_code: 429, body: "{}" }
-                  : { status_code: 200, body: JSON.stringify(usage) },
+                path.endsWith("/auth-files")
+                  ? {
+                      files: [
+                        {
+                          id: "first.json",
+                          auth_index: "a",
+                          provider: "codex",
+                          email: "first@example.test",
+                        },
+                      ],
+                    }
+                  : { models: [] },
               ),
             );
           }),
@@ -351,6 +325,120 @@ it.effect("keeps an account's last good reading when the hub's next read of it i
     ]),
   );
 });
+
+it.effect.each([
+  { enabled: true },
+  { enabled: true, accountUsageEnabled: false },
+  { enabled: false, accountUsageEnabled: true },
+])("does not resolve credentials or request unselected or disabled quota sources: %j", (flags) =>
+  Effect.gen(function* () {
+    const sources = yield* UsageLimitSources.make;
+    yield* sources.refresh;
+    expect(yield* sources.current).toEqual([]);
+  }).pipe(
+    Effect.provide([
+      ServerSettings.layerTest({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("quota")]: {
+            kind: "http",
+            url: "https://quota.test/v1",
+            managementKey: { provider: SecretProviderId.make("store"), reference: "quota-key" },
+            ...flags,
+          },
+        },
+      }),
+      Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+        shouldRunScopeWork: () => Effect.succeed(false),
+      }),
+      Layer.succeed(SecretResolver.SecretResolver, {
+        label: (provider) => Effect.succeed(provider),
+        read: () => Effect.die("An unselected quota credential must not be resolved"),
+        invalidate: () => Effect.void,
+      }),
+      Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make(() => Effect.die("An unselected quota source must not be requested")),
+      ),
+      NodeCrypto.layer,
+    ]),
+  ),
+);
+
+it.effect("discards an in-flight account response after its source is revoked", () =>
+  Effect.gen(function* () {
+    const started = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let requests = 0;
+    yield* Effect.gen(function* () {
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const sources = yield* UsageLimitSources.make;
+      const refresh = yield* sources.refresh.pipe(Effect.forkChild);
+      yield* Deferred.await(started);
+      const current = yield* settings.getSettings;
+      yield* settings.updateSettings({
+        usageLimitSources: {
+          [UsageLimitSourceId.make("quota")]: {
+            ...current.usageLimitSources[UsageLimitSourceId.make("quota")]!,
+            accountUsageEnabled: false,
+          },
+        },
+      });
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(refresh);
+      expect(yield* sources.current).toEqual([]);
+      yield* sources.refresh;
+      expect(requests).toBe(1);
+    }).pipe(
+      Effect.provide([
+        ServerSettings.layerTest({
+          usageLimitSources: {
+            [UsageLimitSourceId.make("quota")]: {
+              kind: "http",
+              url: "https://quota.test/v1",
+              managementKey: "test-token",
+              enabled: true,
+              accountUsageEnabled: true,
+            },
+          },
+        }),
+        Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+          shouldRunScopeWork: () => Effect.succeed(false),
+        }),
+        Layer.succeed(SecretResolver.SecretResolver, {
+          label: (provider) => Effect.succeed(provider),
+          read: (references) => Effect.succeed(references.map(() => undefined)),
+          invalidate: () => Effect.void,
+        }),
+        Layer.succeed(
+          HttpClient.HttpClient,
+          HttpClient.make((request) =>
+            Effect.gen(function* () {
+              requests++;
+              yield* Deferred.succeed(started, undefined);
+              yield* Deferred.await(release);
+              return HttpClientResponse.fromWeb(
+                request,
+                Response.json({
+                  version: 1,
+                  accounts: [
+                    {
+                      id: "revoked-account",
+                      label: "Account",
+                      windows: [
+                        { id: "monthly", kind: "monthly", label: "Monthly", usedPercent: 35 },
+                      ],
+                    },
+                  ],
+                }),
+              );
+            }),
+          ),
+        ),
+        NodeCrypto.layer,
+      ]),
+    );
+  }),
+);
 
 const NOW = Date.parse("2026-11-13T12:00:00.000Z");
 const at = (hours: number) => DateTime.formatIso(DateTime.makeUnsafe(NOW + hours * 3_600_000));

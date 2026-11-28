@@ -105,6 +105,13 @@ export const make = Effect.gen(function* () {
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const selected = snapshots.find((provider) => provider.instanceId === selection.instanceId);
     const selectedDisabled = selected?.enabled === false;
+    if (!selectedDisabled && exhaustedUsageWindow(selected, now, selection.model)) {
+      return yield* new TextGenerationError({
+        operation,
+        detail:
+          "The selected provider has reached its usage limit. Wait for the limit to reset or explicitly choose another account or API provider.",
+      });
+    }
     // Only a failed probe counts: a pending one is also not installed yet.
     const unusable =
       textGeneratorCannotRun ||
@@ -115,7 +122,7 @@ export const make = Effect.gen(function* () {
             ?.supportsTextGeneration === false ||
           (selected.status === "error" &&
             (!selected.installed || selected.auth.status === "unauthenticated"))));
-    if (unusable || exhaustedUsageWindow(selected, now, selection.model)) {
+    if (unusable) {
       const settings = yield* serverSettings.getSettings.pipe(
         Effect.mapError(
           (cause) =>
@@ -133,7 +140,9 @@ export const make = Effect.gen(function* () {
           (instanceId, driver, model) => {
             const provider = snapshots.find((candidate) => candidate.instanceId === instanceId);
             return (
-              (sameInstance ? model !== rejected.model : instanceId !== rejected.instanceId) &&
+              (sameInstance
+                ? instanceId === rejected.instanceId && model !== rejected.model
+                : instanceId !== rejected.instanceId) &&
               provider?.enabled === true &&
               resolveProjectProviderInstanceEnabled(settings, projectId ?? null, instanceId) &&
               provider.installed &&

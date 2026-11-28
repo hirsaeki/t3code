@@ -119,12 +119,16 @@ export const renderCliShim = (input: {
     // Ctrl-C to the CLI directly. A background child would read /dev/null, so pass stdin on fd 9.
     // With stdin closed, `exec 9<&0` would end the shell; `command` makes it a normal error.
     "{ command exec 9<&0; } 2>/dev/null || exec 9</dev/null",
+    // The CLI can become ready before its PID is assigned; defer a stop instead of unmounting.
+    "cli=",
+    "pending=",
+    `trap 'if [ -n "$cli" ]; then kill -TERM "$cli" 2>/dev/null; else pending=TERM; fi' TERM`,
+    `trap 'if [ -n "$cli" ]; then kill -HUP "$cli" 2>/dev/null; else pending=HUP; fi' HUP`,
     `${run("$mount")} <&9 9<&- &`,
     "cli=$!",
     "exec 9<&-",
-    `trap 'kill -TERM "$cli" 2>/dev/null' TERM`,
-    `trap 'kill -HUP "$cli" 2>/dev/null' HUP`,
     "trap '' INT",
+    '[ -z "$pending" ] || kill "-$pending" "$cli" 2>/dev/null',
     "status=0",
     'wait "$cli" || status=$?',
     // A trapped signal interrupts wait; wait again for the CLI's own exit status.
