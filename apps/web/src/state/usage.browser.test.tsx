@@ -152,10 +152,11 @@ describe("usage environment selection", () => {
     async (initial) => {
       requests.mockClear();
       const registry = AtomRegistry.make();
-      if (!Atom.isWritable<EnvironmentId | null, EnvironmentId | null>(localEnvironmentIdAtom)) {
+      const environmentIdAtom = localEnvironmentIdAtom;
+      if (!Atom.isWritable<EnvironmentId | null, EnvironmentId | null>(environmentIdAtom)) {
         throw new Error("Fixture environment atom must be writable");
       }
-      registry.set(localEnvironmentIdAtom, initial === null ? null : EnvironmentId.make(initial));
+      registry.set(environmentIdAtom, initial === null ? null : EnvironmentId.make(initial));
       try {
         await using screen = await render(
           <RegistryContext.Provider value={registry}>
@@ -169,7 +170,7 @@ describe("usage environment selection", () => {
           await expect
             .element(screen.getByText("Select an environment to see limits."))
             .toBeVisible();
-          await act(() => registry.set(localEnvironmentIdAtom, EnvironmentId.make("local")));
+          await act(() => registry.set(environmentIdAtom, EnvironmentId.make("local")));
         }
         await expect
           .element(screen.getByRole("button", { name: "local", exact: true }))
@@ -181,7 +182,7 @@ describe("usage environment selection", () => {
           .element(screen.getByText("Select an environment to see limits."))
           .toBeVisible();
         requests.mockClear();
-        await act(() => registry.set(localEnvironmentIdAtom, EnvironmentId.make("remote")));
+        await act(() => registry.set(environmentIdAtom, EnvironmentId.make("remote")));
         await expect
           .element(screen.getByText("Select an environment to see limits."))
           .toBeVisible();
@@ -197,10 +198,11 @@ describe("usage environment selection", () => {
     async (selection) => {
       requests.mockClear();
       const registry = AtomRegistry.make();
-      if (!Atom.isWritable<EnvironmentId | null, EnvironmentId | null>(localEnvironmentIdAtom)) {
+      const environmentIdAtom = localEnvironmentIdAtom;
+      if (!Atom.isWritable<EnvironmentId | null, EnvironmentId | null>(environmentIdAtom)) {
         throw new Error("Fixture environment atom must be writable");
       }
-      registry.set(localEnvironmentIdAtom, null);
+      registry.set(environmentIdAtom, null);
       try {
         await using screen = await render(
           <RegistryContext.Provider value={registry}>
@@ -225,7 +227,7 @@ describe("usage environment selection", () => {
           requests.mockClear();
         }
         await userEvent.keyboard("{Escape}");
-        await act(() => registry.set(localEnvironmentIdAtom, EnvironmentId.make("local")));
+        await act(() => registry.set(environmentIdAtom, EnvironmentId.make("local")));
         const trigger = screen.getByRole("button", {
           name: selection === "all" ? "All environments" : "0 environments",
           exact: true,

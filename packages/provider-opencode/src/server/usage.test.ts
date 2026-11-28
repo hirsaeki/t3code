@@ -204,7 +204,10 @@ describe("readOpenCodeUsage", () => {
                 : fs.readDirectory(directory),
           }),
         );
-        assert.deepStrictEqual(missing.files.flatMap((entry) => entry.records), []);
+        assert.deepStrictEqual(
+          missing.files.flatMap((entry) => entry.records),
+          [],
+        );
         assert.strictEqual(missing.error, removed === "table" || inventoryFails);
 
         if (removed === "database") yield* fs.rename(path.join(root, "saved"), file);

@@ -128,6 +128,22 @@ const openCode2Model = (providerID: string, id: string, name: string) => ({
   enabled: true,
   limit: { context: 1000000, output: 65536 },
 });
+const openCode2UsageResponses = {
+  ...OPENCODE_2_RESPONSES,
+  "/api/model": {
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      location: { directory: "/work" },
+      data: [openCode2Model("opencode", "big-pickle", "Big Pickle")],
+    }),
+  },
+  "/api/provider": {
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ location: { directory: "/work" }, data: [] }),
+  },
+};
 // Serves one machine catalog everywhere plus extra models for the project directory.
 const makeOpenCode2ProjectInstance = (
   projectCatalog: "listed" | "models-unavailable" | "providers-unavailable",
@@ -1046,28 +1062,20 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
   ])("does not request account usage before opt-in or while disabled: %j", (flags) =>
     Effect.gen(function* () {
       const requested: string[] = [];
-      const replay = replayOpenCodeServer(OPENCODE_2_RESPONSES, "secret", requested);
+      const replay = replayOpenCodeServer(openCode2UsageResponses, "secret", requested);
       const instance = yield* create(
         { serverUrl: "https://remote.example", serverPassword: "secret" },
         replay,
         flags.enabled,
-      ).pipe(
-        Effect.provide(
-          TestProviderHost.layer({
-            settings: {
-              ...DEFAULT_SERVER_SETTINGS,
-              providerInstances: {
-                [ProviderInstanceId.make("opencode-test")]: {
-                  driver: ProviderDriverKind.make("opencode"),
-                  ...flags,
-                },
-              },
-            },
-          }),
-        ),
       );
-      yield* instance.snapshot.streamChanges.pipe(Stream.take(1), Stream.runDrain);
-      yield* instance.snapshot.refresh;
+      const refreshing = yield* Effect.forkChild(instance.snapshot.refresh);
+      yield* TestClock.adjust("5 seconds");
+      const snapshot = yield* Fiber.join(refreshing);
+      assert.strictEqual(snapshot.enabled, flags.enabled);
+      if (flags.enabled) {
+        assert.strictEqual(snapshot.status, "ready");
+        assert.strictEqual(snapshot.auth.status, "authenticated");
+      }
       yield* instance.snapshot.refreshUsage!;
       yield* TestClock.adjust("10 minutes");
       assert.isUndefined((yield* instance.snapshot.getSnapshot).usageLimits);
@@ -1075,7 +1083,23 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         requested.filter((url) => url.includes("usage/limits") || url.includes("go/v1/usage")),
         [],
       );
-    }),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        TestProviderHost.layer({
+          settings: {
+            ...DEFAULT_SERVER_SETTINGS,
+            providerInstances: {
+              [ProviderInstanceId.make("opencode-test")]: {
+                driver: ProviderDriverKind.make("opencode"),
+                ...flags,
+              },
+            },
+          },
+        }),
+      ),
+      Effect.provide(TestClock.layer()),
+    ),
   );
 
   it.effect.each([
@@ -1111,7 +1135,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     (scenario) =>
       Effect.gen(function* () {
         const requested: string[] = [];
-        const replay = replayOpenCodeServer(OPENCODE_2_RESPONSES, "secret", requested);
+        const replay = replayOpenCodeServer(openCode2UsageResponses, "secret", requested);
         const server = HttpClient.make((request) => {
           assert.notInclude(request.url, "opencode.ai/zen");
           if (request.url.endsWith("/api/experimental/usage/limits")) {
@@ -1135,13 +1159,11 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
           { serverUrl: "https://remote.example", serverPassword: "secret" },
           server,
         );
-        const [snapshot] = Array.from(
-          yield* instance.snapshot.streamChanges.pipe(
-            Stream.filter((snapshot) => snapshot.usageLimits !== undefined),
-            Stream.take(1),
-            Stream.runCollect,
-          ),
-        );
+        const refreshing = yield* Effect.forkChild(instance.snapshot.refresh);
+        yield* TestClock.adjust("5 seconds");
+        const snapshot = yield* Fiber.join(refreshing);
+        assert.strictEqual(snapshot.status, "ready");
+        assert.strictEqual(snapshot.auth.status, "authenticated");
         assert.strictEqual(snapshot?.usageLimits?.unavailable?.reason, scenario.reason);
         if (scenario.reason === undefined) {
           assert.strictEqual(snapshot?.usageLimits?.windows[0]?.usedPercent, 75);
@@ -1150,7 +1172,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         } else {
           assert.deepStrictEqual(snapshot?.usageLimits?.windows, []);
         }
-      }),
+      }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
   );
 
   it.effect.each(
@@ -1255,21 +1277,6 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         enabled: scenario.enabled,
         config: OpenCodeDriver.defaultConfig(),
       }).pipe(
-        Effect.provide(
-          TestProviderHost.layer({
-            runBackgroundWork: scenario.demand,
-            settings: scenario.intervalOff
-              ? {
-                  ...optedInSettings("opencode-usage-recovery"),
-                  backgroundActivity: {
-                    ...DEFAULT_SERVER_SETTINGS.backgroundActivity,
-                    profile: "custom",
-                    overrides: { providerHealthRefreshInterval: Duration.zero },
-                  },
-                }
-              : optedInSettings("opencode-usage-recovery"),
-          }),
-        ),
         Effect.provideService(HttpClient.HttpClient, server),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
       );
@@ -1286,13 +1293,14 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       const failed = initial
         ? Array.from(yield* Fiber.join(initial))[0]
         : yield* instance.snapshot.getSnapshot;
+      const initialReason = scenario.unsupported ? "unsupported" : "probeFailed";
       if (scenario.enabled) {
         assert.strictEqual(failed?.status, "ready");
         assert.strictEqual(failed?.auth.status, "authenticated");
+        assert.strictEqual(failed?.usageLimits?.unavailable?.reason, initialReason);
+      } else {
+        assert.isUndefined(failed?.usageLimits);
       }
-      const initialReason =
-        scenario.enabled && !scenario.unsupported ? "probeFailed" : "unsupported";
-      assert.strictEqual(failed?.usageLimits?.unavailable?.reason, initialReason);
       const catalogReads = modelReads;
       const starts = serverStarts;
 
@@ -1311,21 +1319,43 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       const expectedReads = !scenario.enabled ? 0 : shouldRecover ? 2 : 1;
       assert.strictEqual(usageReads, expectedReads);
       if (recovery) assert.deepStrictEqual(Array.from(yield* Fiber.join(recovery)), [recovered]);
-      assert.strictEqual(
-        recovered.usageLimits?.unavailable?.reason,
-        shouldRecover ? undefined : initialReason,
-      );
-      assert.deepStrictEqual(
-        recovered.usageLimits?.windows.map((window) => window.kind),
-        shouldRecover ? ["session", "weekly", "monthly"] : [],
-      );
+      if (scenario.enabled) {
+        assert.strictEqual(
+          recovered.usageLimits?.unavailable?.reason,
+          shouldRecover ? undefined : initialReason,
+        );
+        assert.deepStrictEqual(
+          recovered.usageLimits?.windows.map((window) => window.kind),
+          shouldRecover ? ["session", "weekly", "monthly"] : [],
+        );
+      } else {
+        assert.isUndefined(recovered.usageLimits);
+      }
       assert.strictEqual(modelReads, catalogReads);
       assert.strictEqual(serverStarts, starts);
       yield* TestClock.adjust("15 minutes");
       assert.strictEqual(usageReads, expectedReads);
       assert.strictEqual(modelReads, catalogReads);
       assert.strictEqual(serverStarts, starts);
-    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        TestProviderHost.layer({
+          runBackgroundWork: scenario.demand,
+          settings: scenario.intervalOff
+            ? {
+                ...optedInSettings("opencode-usage-recovery"),
+                backgroundActivity: {
+                  ...DEFAULT_SERVER_SETTINGS.backgroundActivity,
+                  profile: "custom",
+                  overrides: { providerHealthRefreshInterval: Duration.zero },
+                },
+              }
+            : optedInSettings("opencode-usage-recovery"),
+        }),
+      ),
+      Effect.provide(TestClock.layer()),
+    ),
   );
 
   it.effect("reads Go usage from a stored key when the local server has no Console workspace", () =>
@@ -1355,7 +1385,13 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         const body =
           path === "/api/info"
             ? JSON.parse(OPENCODE_2_RESPONSES["/api/info"].body)
-            : { location: { directory: "/work" }, data: [] };
+            : {
+                location: { directory: "/work" },
+                data:
+                  path === "/api/model"
+                    ? [openCode2Model("opencode", "big-pickle", "Big Pickle")]
+                    : [],
+              };
         return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json(body)));
       });
       const runtime = {
@@ -1385,9 +1421,6 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         enabled: true,
         config: OpenCodeDriver.defaultConfig(),
       }).pipe(
-        Effect.provide(
-          TestProviderHost.layer({ settings: optedInSettings("opencode-go-key-only") }),
-        ),
         Effect.provideService(HttpClient.HttpClient, server),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
       );
@@ -1400,13 +1433,21 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       yield* Deferred.await(usageStarted);
       yield* TestClock.adjust("5 seconds");
       const [snapshot] = Array.from(yield* Fiber.join(initial));
+      assert.strictEqual(snapshot?.status, "ready");
+      assert.strictEqual(snapshot?.auth.status, "authenticated");
       assert.strictEqual(snapshot?.usageLimits?.unavailable, undefined);
       assert.deepStrictEqual(
         snapshot?.usageLimits?.windows.map((window) => window.kind),
         ["session", "weekly", "monthly"],
       );
       assert.strictEqual(goUsageReads, 1);
-    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        TestProviderHost.layer({ settings: optedInSettings("opencode-go-key-only") }),
+      ),
+      Effect.provide(TestClock.layer()),
+    ),
   );
 });
 
