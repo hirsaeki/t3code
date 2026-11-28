@@ -117,7 +117,19 @@ jobs:
         run: vp run i18n:check
 
       - name: Check
+        id: check
         run: vp check
+
+      - name: Show pending provider formatting
+        if: ${{ failure() && steps.check.outcome == 'failure' }}
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          git rev-parse HEAD
+          printf '%s\n' "$PR_HEAD_SHA"
+          git ls-tree HEAD -- packages/provider-core/src/server/managedProvider.ts packages/provider-opencode/src/server/usage.test.ts
+          vp fmt --write --no-error-on-unmatched-pattern packages/provider-core/src/server/managedProvider.ts packages/provider-opencode/src/server/usage.test.ts
+          git diff --exit-code -- packages/provider-core/src/server/managedProvider.ts packages/provider-opencode/src/server/usage.test.ts
 
   build:
     permissions:

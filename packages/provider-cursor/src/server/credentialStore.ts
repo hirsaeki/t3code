@@ -34,8 +34,9 @@ export const makeCursorCredentialStore = Effect.fn("makeCursorCredentialStore")(
       : fileSystem
           .remove(legacyFile)
           .pipe(
-            Effect.catch((cause) =>
-              cause.reason._tag === "NotFound" ? Effect.void : Effect.fail(cause),
+            Effect.catchIf(
+              (cause) => cause.reason._tag === "NotFound",
+              () => Effect.void,
             ),
           );
   if (legacyFile !== undefined) {
