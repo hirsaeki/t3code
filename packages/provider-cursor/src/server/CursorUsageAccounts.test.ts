@@ -154,10 +154,7 @@ it.effect("purges an intermediate revocation and discards the refresh started be
         ),
         ["fetch-3"],
       );
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(TestProviderHost.layer({ settings: selected })),
-    );
+    }).pipe(Effect.scoped, Effect.provide(TestProviderHost.layer({ settings: selected })));
   }).pipe(
     Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     Effect.provideService(HostProcess.Environment, {}),

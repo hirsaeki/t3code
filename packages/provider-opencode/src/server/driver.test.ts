@@ -1068,13 +1068,22 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         replay,
         flags.enabled,
       );
-      const refreshing = yield* Effect.forkChild(instance.snapshot.refresh);
+      const initial = flags.enabled
+        ? yield* instance.snapshot.streamChanges.pipe(
+            Stream.filter((snapshot) => snapshot.status === "ready"),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkChild,
+          )
+        : undefined;
       yield* TestClock.adjust("5 seconds");
-      const snapshot = yield* Fiber.join(refreshing);
-      assert.strictEqual(snapshot.enabled, flags.enabled);
+      const snapshot = initial
+        ? Array.from(yield* Fiber.join(initial))[0]
+        : yield* instance.snapshot.getSnapshot;
+      assert.strictEqual(snapshot?.enabled, flags.enabled);
       if (flags.enabled) {
-        assert.strictEqual(snapshot.status, "ready");
-        assert.strictEqual(snapshot.auth.status, "authenticated");
+        assert.strictEqual(snapshot?.status, "ready");
+        assert.strictEqual(snapshot?.auth.status, "authenticated");
       }
       yield* instance.snapshot.refreshUsage!;
       yield* TestClock.adjust("10 minutes");
@@ -1161,11 +1170,16 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
           { serverUrl: "https://remote.example", serverPassword: "secret" },
           server,
         );
-        const refreshing = yield* Effect.forkChild(instance.snapshot.refresh);
+        const initial = yield* instance.snapshot.streamChanges.pipe(
+          Stream.filter((snapshot) => snapshot.status === "ready"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
         yield* TestClock.adjust("5 seconds");
-        const snapshot = yield* Fiber.join(refreshing);
-        assert.strictEqual(snapshot.status, "ready");
-        assert.strictEqual(snapshot.auth.status, "authenticated");
+        const [snapshot] = Array.from(yield* Fiber.join(initial));
+        assert.strictEqual(snapshot?.status, "ready");
+        assert.strictEqual(snapshot?.auth.status, "authenticated");
         assert.strictEqual(snapshot?.usageLimits?.unavailable?.reason, scenario.reason);
         if (scenario.reason === undefined) {
           assert.strictEqual(snapshot?.usageLimits?.windows[0]?.usedPercent, 75);

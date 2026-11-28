@@ -184,7 +184,7 @@ jobs:
         run: |
           (
             set +e
-            vpr typecheck
+            vp run -r --cache --concurrency-limit 4 -v typecheck
             echo "$?" > "$RUNNER_TEMP/typecheck-status"
           ) > "$RUNNER_TEMP/typecheck.log" 2>&1 < /dev/null &
 
