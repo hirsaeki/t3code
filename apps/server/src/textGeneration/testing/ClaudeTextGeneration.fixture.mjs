@@ -42,6 +42,7 @@ if (settingsValue.startsWith("{")) {
   fail("text generation must keep settings out of process arguments", 17);
 }
 if (
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone CLI fixture has no Effect runtime.
   process.platform !== "win32" &&
   ((NodeFS.statSync(settingsValue).mode & 0o777) !== 0o600 ||
     (NodeFS.statSync(NodePath.dirname(settingsValue)).mode & 0o777) !== 0o700)
